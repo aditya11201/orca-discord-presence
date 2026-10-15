@@ -9,6 +9,7 @@ import {
 } from '../dist/lib/discord-ipc.mjs'
 import { candidateSocketPaths, posixRuntimeBases } from '../dist/lib/socket-path.mjs'
 import {
+  applyAgentIdentities,
   applyAgentStatus,
   applyWorktreeCreated,
   applyWorktreeRemoved,
@@ -23,6 +24,7 @@ import {
   describeWorkspaces,
   HEADER_PRESETS,
   isBusy,
+  latestAgent,
   nextHeader,
   nextPrivacy,
   pruneStale,
@@ -478,4 +480,117 @@ test('privacy cycles through every level and returns', () => {
   assert.equal(nextPrivacy('full'), 'minimal')
   assert.equal(nextPrivacy('minimal'), 'off')
   assert.equal(nextPrivacy('off'), 'full')
+})
+
+// ---------------------------------------------------------------- agent logo
+
+function agentStatus(paneKey, state, receivedAt) {
+  return { paneKey, state, receivedAt, worktreeId: null }
+}
+
+test('an agent identity survives a status update on the same pane', () => {
+  const state = createPresenceState()
+  applyAgentStatus(state, agentStatus('pane-1', 'working', 1))
+  applyAgentIdentities(state, new Map([['pane-1', { agent: 'omp', receivedAt: 1 }]]))
+  // A later status update for the same pane must not clear the identity.
+  applyAgentStatus(state, agentStatus('pane-1', 'done', 2))
+  assert.equal(state.panes.get('pane-1')?.agent, 'omp')
+})
+
+test('identities for panes Orca never projected are not adopted', () => {
+  const state = createPresenceState()
+  applyAgentIdentities(
+    state,
+    new Map([
+      ['pane-1', { agent: 'omp', receivedAt: 1 }],
+      ['pane-unknown', { agent: 'opencode', receivedAt: 2 }]
+    ])
+  )
+  assert.equal(state.panes.size, 0)
+})
+
+test('the agent identity round-trips through storage', () => {
+  const state = createPresenceState()
+  applyAgentStatus(state, agentStatus('pane-1', 'working', 10))
+  applyAgentIdentities(state, new Map([['pane-1', { agent: 'opencode', receivedAt: 10 }]]))
+  const restored = deserializeState(serializeState(state))
+  assert.equal(restored.panes.get('pane-1')?.agent, 'opencode')
+})
+
+test('latestAgent picks the most recent pane and is deterministic on ties', () => {
+  const state = createPresenceState()
+  applyAgentStatus(state, agentStatus('pane-a', 'done', 100))
+  applyAgentStatus(state, agentStatus('pane-b', 'working', 200))
+  applyAgentIdentities(
+    state,
+    new Map([
+      ['pane-a', { agent: 'omp', receivedAt: 100 }],
+      ['pane-b', { agent: 'opencode', receivedAt: 200 }]
+    ])
+  )
+  assert.deepEqual(latestAgent(state), { paneKey: 'pane-b', agent: 'opencode', receivedAt: 200 })
+
+  const tied = createPresenceState()
+  for (const paneKey of ['pane-z', 'pane-a']) {
+    applyAgentStatus(tied, agentStatus(paneKey, 'working', 50))
+    applyAgentIdentities(tied, new Map([[paneKey, { agent: 'omp', receivedAt: 50 }]]))
+  }
+  assert.equal(latestAgent(tied)?.paneKey, 'pane-a')
+})
+
+test('latestAgent ignores panes the host gave no identity for', () => {
+  const state = createPresenceState()
+  applyAgentStatus(state, agentStatus('pane-a', 'working', 500))
+  assert.equal(latestAgent(state), null)
+})
+
+test('the dynamic logo replaces the default and sets its hover text', () => {
+  const state = createPresenceState()
+  applyAgentStatus(state, agentStatus('pane-1', 'working', 10))
+  applyAgentIdentities(state, new Map([['pane-1', { agent: 'omp', receivedAt: 10 }]]))
+  const base = {
+    state,
+    focus: null,
+    privacy: 'minimal',
+    startedAt: 0
+  }
+  const dynamic = buildActivity({
+    ...base,
+    agentImage: { key: 'https://omp.sh/og-image.png', text: 'OMP' }
+  })
+  assert.equal(dynamic.assets.large_image, 'https://omp.sh/og-image.png')
+  assert.equal(dynamic.assets.large_text, 'OMP')
+
+  const pinned = buildActivity(base)
+  assert.equal(pinned.assets.large_image, DEFAULT_LARGE_IMAGE)
+  assert.equal(pinned.assets.large_text, DEFAULT_LARGE_TEXT)
+})
+
+test('an explicitly empty largeImage suppresses the dynamic logo', () => {
+  const state = createPresenceState()
+  applyAgentStatus(state, agentStatus('pane-1', 'working', 10))
+  applyAgentIdentities(state, new Map([['pane-1', { agent: 'omp', receivedAt: 10 }]]))
+  const activity = buildActivity({
+    state,
+    focus: null,
+    privacy: 'minimal',
+    agentImage: { key: 'https://omp.sh/og-image.png', text: 'OMP' },
+    assets: { largeImage: '' }
+  })
+  assert.equal(activity.assets, undefined)
+})
+
+test('the dynamic logo survives a privacy drop to off', () => {
+  const state = createPresenceState()
+  applyAgentStatus(state, agentStatus('pane-1', 'working', 10))
+  applyAgentIdentities(state, new Map([['pane-1', { agent: 'omp', receivedAt: 10 }]]))
+  assert.equal(
+    buildActivity({
+      state,
+      focus: null,
+      privacy: 'off',
+      agentImage: { key: 'omp-art', text: 'OMP' }
+    }),
+    null
+  )
 })

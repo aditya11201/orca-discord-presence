@@ -19,6 +19,7 @@ import type {
   WorkspaceContext
 } from './lib/orca-api.mjs'
 import {
+  applyAgentIdentities,
   DEFAULT_HEADER,
   DEFAULT_LARGE_IMAGE,
   DEFAULT_PRIVACY,
@@ -32,6 +33,7 @@ import {
   describeWorkspaces,
   isBusy,
   isPrivacyLevel,
+  latestAgent,
   nextHeader,
   nextPrivacy,
   renderHeader,
@@ -43,6 +45,12 @@ import {
   type PresenceSummary,
   type PrivacyLevel
 } from './lib/presence-model.mjs'
+import {
+  describeAgent,
+  readAgentIdentities,
+  readAgentImages,
+  resolveAgentImage
+} from './lib/agent-identity.mjs'
 
 const STORAGE_KEY = 'presence-state'
 const STORAGE_STARTED_AT_KEY = 'busy-since'
@@ -76,6 +84,12 @@ type PluginSettings = {
   clientId: string
   header: string | undefined
   assets: PresenceAssets
+  /** Swap the logo for the agent that ran most recently. On by default. */
+  dynamicAgentImage: boolean
+  /** Per-agent artwork overrides: asset key or `https://` image URL. */
+  agentImages: Record<string, string>
+  /** Directory holding the host's `agent-hooks/` rows; resolved if unset. */
+  agentStateDir: string | undefined
 }
 
 export type PresenceStatusReport = {
@@ -91,6 +105,10 @@ export type PresenceStatusReport = {
   headerText: string
   /** Art asset key published as the large image; empty when turned off. */
   largeImage: string
+  /** Agent whose logo is published; `null` when the dynamic logo is off/unresolved. */
+  agent: string | null
+  /** Art key or URL actually published as the logo. */
+  publishedImage: string
   /** Art asset key published as the badge; empty unless one is configured. */
   smallImage: string
   summary: PresenceSummary
@@ -120,6 +138,7 @@ export default function activate(orca: OrcaPluginApi): void {
   // the presets when it does not — Orca has no text-input affordance for
   // commands, so the cycle is what makes this usable from the palette alone.
   orca.commands.register('presence.header', (args) => runtime.setHeader(args))
+  orca.commands.register('presence.logo', () => runtime.toggleDynamicLogo())
 
   orca.events.on('worktree.created', (payload) => {
     runtime.onEvent((state) => applyWorktreeCreated(state, payload))
@@ -129,6 +148,10 @@ export default function activate(orca: OrcaPluginApi): void {
   })
   orca.events.on('agent.status.changed', (payload) => {
     runtime.onEvent((state) => applyAgentStatus(state, payload))
+    // The event carries no agent identity, so the join runs against the host's
+    // persisted rows on every status change — the moment a new agent speaks up
+    // is exactly when the logo has to move.
+    runtime.onEvent((state) => applyAgentIdentities(state, runtime.readIdentities()))
   })
 }
 
@@ -155,7 +178,10 @@ class PresenceRuntime {
       largeText: undefined,
       smallImage: undefined,
       smallText: undefined
-    }
+    },
+    dynamicAgentImage: true,
+    agentImages: {},
+    agentStateDir: undefined
   }
   #client: DiscordPresenceClient | null = null
   #connecting = false
@@ -202,6 +228,39 @@ class PresenceRuntime {
     return this.#granted.has(capability)
   }
 
+  /**
+   * Agent identities from the host's persisted rows. Public because the event
+   * handlers in `activate()` run outside the class but need the same join.
+   * Returns an empty map whenever the file is missing, oversized or unreadable
+   * — the presence keeps working with the Orca logo in that case.
+   */
+  readIdentities(): Map<string, { agent: string; receivedAt: number }> {
+    if (!this.#settings.dynamicAgentImage) {
+      return new Map()
+    }
+    return readAgentIdentities({ agentStateDir: this.#settings.agentStateDir })
+  }
+
+  /** Logo for the agent that ran most recently, or `undefined` to keep the default. */
+  #agentImage(): { key: string; text: string } | undefined {
+    if (!this.#settings.dynamicAgentImage) {
+      return undefined
+    }
+    const latest = latestAgent(this.#state)
+    if (!latest) {
+      return undefined
+    }
+    const image = resolveAgentImage(latest.agent, {
+      agentImages: this.#settings.agentImages,
+      fallbackImage: this.#settings.assets.largeImage ?? DEFAULT_LARGE_IMAGE
+    })
+    // The fallback key is what would have been published anyway; publishing it
+    // through this path would only obscure the status report.
+    return image.key === (this.#settings.assets.largeImage ?? DEFAULT_LARGE_IMAGE)
+      ? undefined
+      : image
+  }
+
   async #loadSettings(): Promise<void> {
     if (!this.#can('settings:own')) {
       return
@@ -219,7 +278,10 @@ class PresenceRuntime {
           largeText: readOptionalString(stored['largeText']),
           smallImage: readOptionalString(stored['smallImage']),
           smallText: readOptionalString(stored['smallText'])
-        }
+        },
+        dynamicAgentImage: stored['dynamicAgentImage'] !== false,
+        agentImages: readAgentImages(stored['agentImages']),
+        agentStateDir: readOptionalString(stored['agentStateDir'])
       }
     } catch (error) {
       this.#orca.log(`settings unavailable, using defaults: ${describeError(error)}`)
@@ -279,6 +341,12 @@ class PresenceRuntime {
       next = null
     }
     this.#focus = next
+    // The identity join is cheap (one bounded file read) and the focus poll is
+    // the only heartbeat while the fleet is quiet, so it doubles as the sweep
+    // that catches an agent switching panes without a status event.
+    if (this.#settings.dynamicAgentImage) {
+      this.onEvent((state) => applyAgentIdentities(state, this.readIdentities()))
+    }
     // Orca still has no focus-change plugin event. Polling only helps if a
     // changed context triggers a publish; otherwise the new workspace sits in
     // memory until an unrelated agent event happens to arrive.
@@ -353,6 +421,7 @@ class PresenceRuntime {
       startedAt: this.#busySince,
       header: this.#settings.header,
       assets: this.#settings.assets,
+      agentImage: this.#agentImage(),
       partyId: this.#partyId
     })
     // Why: identical payloads still cost a rate-limit slot, and a fleet can emit
@@ -486,6 +555,30 @@ class PresenceRuntime {
   }
 
   /**
+   * Turns the agent-following logo off (or back on). Off means the configured
+   * `largeImage` — or the shipped `orca` asset — is published instead.
+   */
+  async toggleDynamicLogo(): Promise<{ dynamicAgentImage: boolean; agent: string | null }> {
+    this.#settings.dynamicAgentImage = !this.#settings.dynamicAgentImage
+    await this.#saveSetting('dynamicAgentImage', this.#settings.dynamicAgentImage)
+    this.#lastPayload = ''
+    this.#schedulePublish()
+    const latest = this.#settings.dynamicAgentImage ? latestAgent(this.#state) : null
+    await this.#notify(
+      'Discord Presence',
+      this.#settings.dynamicAgentImage
+        ? latest
+          ? `Logo follows the latest agent: ${describeAgent(latest.agent)}.`
+          : 'Logo follows the latest agent; no agent seen yet.'
+        : 'Logo pinned to the configured image.'
+    )
+    return {
+      dynamicAgentImage: this.#settings.dynamicAgentImage,
+      agent: latest?.agent ?? null
+    }
+  }
+
+  /**
    * Drops the connection and publishes again straight away.
    *
    * The reconnect backoff already recovers on its own, but only while the
@@ -519,6 +612,9 @@ class PresenceRuntime {
     const headerText = this.#renderHeader(header)
     const largeImage = this.#settings.assets.largeImage ?? DEFAULT_LARGE_IMAGE
     const smallImage = this.#settings.assets.smallImage ?? ''
+    const agentImage = this.#agentImage()
+    const latest = latestAgent(this.#state)
+    const publishedImage = agentImage?.key || largeImage
     const connection = this.#client?.connected
       ? `connected (${this.#client.socketPath})`
       : (this.#lastError ?? 'not connected')
@@ -529,7 +625,11 @@ class PresenceRuntime {
       [headerText, describeActivity(summary, this.#visibleWorkspaces(summary))]
         .filter(Boolean)
         .join(' · '),
-      `logo: ${largeImage || 'off'}${smallImage ? ` · badge: ${smallImage}` : ''}`,
+      this.#settings.dynamicAgentImage
+        ? latest
+          ? `logo: ${publishedImage} (${describeAgent(latest.agent)})`
+          : `logo: ${publishedImage || 'off'} (no agent seen yet)`
+        : `logo: ${publishedImage || 'off'}${smallImage ? ` · badge: ${smallImage}` : ''}`,
       connection
     ].join('\n')
     await this.#notify('Discord Presence', body)
@@ -542,6 +642,8 @@ class PresenceRuntime {
       header,
       headerText,
       largeImage,
+      agent: latest?.agent ?? null,
+      publishedImage,
       smallImage,
       summary,
       lastError: this.#lastError

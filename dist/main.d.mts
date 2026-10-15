@@ -35,6 +35,10 @@ export type PresenceStatusReport = {
     headerText: string;
     /** Art asset key published as the large image; empty when turned off. */
     largeImage: string;
+    /** Agent whose logo is published; `null` when the dynamic logo is off/unresolved. */
+    agent: string | null;
+    /** Art key or URL actually published as the logo. */
+    publishedImage: string;
     /** Art asset key published as the badge; empty unless one is configured. */
     smallImage: string;
     summary: PresenceSummary;

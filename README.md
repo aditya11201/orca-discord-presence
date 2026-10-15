@@ -56,6 +56,7 @@ Workspace names come from the worktree's directory name, falling back to its bra
 | `Discord Presence: Toggle` | Enable/disable publishing |
 | `Discord Presence: Cycle Privacy Level` | Sets the level from the command's argument, or cycles `full` → `minimal` → `off` → … without one |
 | `Discord Presence: Set Header` | Sets line one from the command's argument, or cycles the presets without one |
+| `Discord Presence: Toggle Agent Logo` | Pins the logo to `largeImage`, or puts it back on following the latest agent |
 | `Discord Presence: Reconnect` | Drops the Discord connection and publishes again immediately |
 | `Discord Presence: Show Connection Status` | What is being published, the logo key, connection state, socket path, and the last error |
 
@@ -86,11 +87,11 @@ The **Set Header** command is the way in that does not involve a text editor:
 
 ### The logo and the badge
 
-`largeImage` is an **art asset key**, not a file path — Discord renders artwork uploaded to the application the presence is published through. The shipped application hosts the Orca logo under the key `orca`, which is why the logo needs no configuration.
+`largeImage` defaults to **an `https://` image URL**, not an asset key — Discord proxies the URL once, caches it, and renders it like uploaded art. That is deliberate: the shipped application hosts **no** artwork, so an earlier default of the key `orca` rendered Discord's missing-asset placeholder (a question mark) on a fresh install.
 
-Point `clientId` at your own application and that stops being true: the key `orca` means nothing there until you upload artwork under that name. Upload a logo as `orca`, or set `largeImage` to whichever key you used.
+Point `clientId` at your own application and you can go back to asset keys: upload a logo under *Rich Presence → Art Assets* and set `largeImage` to its key.
 
-`smallImage` is the badge in the logo's corner, and it is **off by default** — the shipped application hosts artwork under no key but `orca`, so a default would publish an empty square. Upload a badge to your own application and name its key to turn it on; a badge with no logo to sit on is dropped rather than published alone.
+`smallImage` is the badge in the logo's corner, and it is **off by default** — neither the shipped application nor the dynamic agent artwork hosts a badge, so a default would publish an empty square. Upload one to your own application and name its key to turn it on; a badge with no logo to sit on is dropped rather than published alone.
 
 ### The party gauge
 
@@ -136,12 +137,94 @@ Orca has no UI for per-plugin settings yet, so anything the commands do not cove
 | `privacy` | `"minimal"` | See [Privacy](#privacy) |
 | `clientId` | shipped id | The Discord application to publish through |
 | `header` | `"Orca"` | Line one; takes `{workspace}` and `{branch}`; `""` hides it |
-| `largeImage` | `"orca"` | Art asset key for the logo; `""` publishes no image |
+| `largeImage` | *(Orca logo URL)* | Asset key or `https://` image URL for the logo; `""` publishes no image |
 | `largeText` | `"Orca"` | Tooltip when hovering the logo |
+| `dynamicAgentImage` | `true` | Follow the latest agent's logo instead of the pinned one |
+| `agentImages` | `{}` | Per-agent artwork: asset key or `https://` image URL |
+| `agentStateDir` | *(resolved)* | Directory holding the host's `agent-hooks/` rows |
 | `smallImage` | `""` *(off)* | Art asset key for the badge in the logo's corner |
 | `smallText` | `""` | Tooltip when hovering the badge |
 
 Every key is optional, and `""` means *off* rather than *default*. Restart Orca, or disable and re-enable the plugin, to pick the file up.
+
+## The logo follows the agent
+
+The large image is not a fixed setting. The plugin tracks **which agent ran most
+re recently** — per pane, not per worktree — and publishes that agent's artwork
+as the logo, with its name as the hover text:
+
+```text
+┌──────────┐  Orca
+│  OMP     │  2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
+└──────────┘  00:14 elapsed
+```
+
+Finish prompting in OMP, start a session in OpenCode, and the logo is OpenCode's
+within a second of that agent's next status update.
+
+### Where the agent id comes from
+
+Orca's plugin events are a bounded four-field projection — `worktreeId`,
+`paneKey`, `state`, `receivedAt` — and **drop agent identity**, so no event can
+tell a plugin which agent is speaking. The host does persist it: every hook
+event writes a row to `<userData>/agent-hooks/last-status.json`, keyed by pane
+key, carrying the agent id in `payload.agentType` (with `agentPresence.agent`
+and `source` as fallbacks). The plugin reads that file on each status change and
+on the 30-second focus poll, and joins what it finds onto the panes it already
+knows.
+
+That file is a host implementation detail, not a contract, so the read is
+defensive: absent, unreadable, oversized or reshaped all degrade to "no identity
+known", which keeps the Orca logo and costs nothing else. If your `<userData>` is
+somewhere unusual, set `agentStateDir`. Only the agent id is ever extracted —
+`payload.prompt` and `lastAssistantMessage` are never copied, logged or
+published.
+
+### Artwork
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `dynamicAgentImage` | `true` | Follow the latest agent's logo |
+| `agentImages` | `{}` | Per-agent artwork: asset key or `https://` image URL |
+| `largeImage` | *(Orca logo URL)* | The pinned logo, used when the dynamic logo is off or an agent has no artwork |
+
+Discord proxies an `https://` image URL once and caches it, so a URL and an
+asset key published to the same application look the same afterwards. Five
+agents ship with artwork, all verified to answer with an image content type:
+
+| Agent | Default artwork |
+| --- | --- |
+| `opencode` · `opencode2` | `raw.githubusercontent.com/stablyai/orca/main/resources/opencode.webp` |
+| `claude` | `raw.githubusercontent.com/stablyai/orca/main/resources/claude.webp` |
+| `openclaude` | `raw.githubusercontent.com/stablyai/orca/main/resources/openclaude-logo.png` |
+| `omp` | `https://omp.sh/og-image.png` |
+
+An agent with no artwork of its own keeps `largeImage`, which is the safe
+outcome: publishing an asset key your Discord application does not host renders
+an empty square. Add your own under `agentImages`:
+
+```json
+{
+  "agentImages": {
+    "omp": "https://example.com/my-omp-logo.png",
+    "codex": "codex-art"
+  }
+}
+```
+
+`agentImages` also wins over the built-ins, so a local upload to your own
+application (Settings → Plugins → *your* application → Rich Presence → Art
+Assets) replaces a URL with zero config elsewhere.
+
+`largeImage: ""` still means "publish no image at all" and outranks the dynamic
+logo; the agent hover text follows whichever image is published.
+
+### Command
+
+**Discord Presence: Toggle Agent Logo** pins the logo to `largeImage` or puts it
+back on following the latest agent. **Show Connection Status** names the agent
+whose artwork is live right now, which is the fastest way to see what the plugin
+thinks is running.
 
 ## Capabilities requested
 
@@ -195,6 +278,8 @@ Contribution kinds the manifest could carry and deliberately does not:
 
 **Linux socket discovery is heuristic.** Orca's worker environment is an allowlist that omits `XDG_RUNTIME_DIR`, so `/run/user/<uid>` is reconstructed from `process.getuid()`. Flatpak and Snap layouts are probed too.
 
+**The agent id comes from a host implementation file.** No plugin event carries it, so it is read from `<userData>/agent-hooks/last-status.json`. Missing, oversized or reshaped all degrade to "no identity known" and the Orca logo stays, but an Orca that renames or stops writing that file would stop the logo following the agent — the presence itself would keep working. `agentStateDir` points elsewhere if the layout moves.
+
 **The plugin API is EXPERIMENTAL upstream.** Orca's own docs promise no compatibility until `pluginApi` v1 freezes. Opening a local socket is possible today only because the capability model has no `net:*` kind yet — the source notes scoped kinds are planned. A future Orca may gate this, and the plugin would need a declared capability to keep working.
 
 **Discord rate limits `SET_ACTIVITY`.** Updates are debounced (1.5s) with a 4s floor between publishes, and identical payloads are skipped entirely.
@@ -208,11 +293,20 @@ git clone https://github.com/LuticaCANARD/orca-discord-presence.git
 cd orca-discord-presence
 npm install
 npm run build      # tsc → dist/
-npm test           # build + node --test (80 tests)
+npm test           # build + node --test
 npm run typecheck  # no emit
 ```
 
 Settings → Plugins → *Add development plugin* and pick the checkout directory to load it into Orca.
+
+To watch a real publish against the Discord client on this machine:
+
+```bash
+node scripts/smoke-live.mjs            # the agent the file names as latest
+node scripts/smoke-live.mjs omp        # force one agent's artwork
+```
+
+It connects to the real IPC socket, publishes one activity, and clears it three seconds later — which mutates your Discord profile for those three seconds, so it is deliberately outside `npm test`.
 
 ```text
 orca-plugin.json            manifest (validated against the host schema by a test)
@@ -220,9 +314,11 @@ orca-marketplace.json       marketplace index — lets this repo be its own sour
 orca-compatibility.json     reviewed Orca release and plugin-contract object ids
 scripts/check-orca-compatibility.mjs
                             latest-release and main contract drift check
+scripts/smoke-live.mjs      live publish against the running Discord client
 src/main.mts                worker entry: activate/deactivate, commands, events
 src/lib/orca-api.mts        hand-maintained types for Orca's plugin worker API
 src/lib/presence-model.mts  pure state model — events in, activity payload out
+src/lib/agent-identity.mts  agent id per pane, read from the host's status rows
 src/lib/discord-ipc.mts     Rich Presence IPC client over node:net
 src/lib/socket-path.mts     socket discovery across platforms and sandboxes
 ```

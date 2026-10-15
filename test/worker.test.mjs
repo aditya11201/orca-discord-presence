@@ -1,12 +1,14 @@
 /**
  * Drives `main.mjs` through a fake `orca` host — the same shape the real worker
- * runtime builds in `plugin-host-runtime.ts`. Discord is not running here, so
- * these also cover the path that matters most in practice: the plugin must stay
- * quiet and alive when there is nothing to connect to.
+ * runtime builds in `plugin-host-runtime.ts`. These assert what the plugin
+ * guarantees whether Discord is reachable or not; a host that has Discord
+ * running gets real connections here, a host without one gets the failure path.
  */
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import activate, { deactivate, DEFAULT_CLIENT_ID } from '../dist/main.mjs'
 
@@ -98,13 +100,13 @@ test('activate registers the manifest commands and event handlers', async () => 
   const fake = createFakeOrca()
   await activate(fake.orca)
   await settle()
-  assert.deepEqual(fake.commandIds().sort(), [
-    'presence.header',
-    'presence.privacy',
-    'presence.reconnect',
-    'presence.status',
-    'presence.toggle'
-  ])
+  // Read from the manifest rather than a literal: a command added to one and
+  // not the other then fails here instead of silently missing from the palette.
+  const manifest = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../orca-plugin.json', import.meta.url)), 'utf8')
+  )
+  const expected = manifest.contributes.commands.map((command) => command.id).sort()
+  assert.deepEqual(fake.commandIds().sort(), expected)
   await deactivate()
 })
 
@@ -169,7 +171,9 @@ test('the Orca logo and header need no configuration', async () => {
   await settle()
   const status = await fake.invoke('presence.status')
   assert.equal(status.header, 'Orca')
-  assert.equal(status.largeImage, 'orca')
+  // A URL, not the `orca` asset key: the shipped application hosts no artwork,
+  // and publishing a key nothing hosts renders Discord's "?" placeholder.
+  assert.match(status.largeImage, /^https:\/\/\S+\.(?:png|jpe?g|gif|webp)$/i)
   await deactivate()
 })
 
@@ -333,12 +337,16 @@ test('reconnect reports the connection state instead of throwing', async () => {
   })
   await settle()
 
-  // Discord is not running here, so the reconnect fails — the command still
-  // has to come back with a report rather than reject.
+  // Discord may or may not be running on the host — the machine running the
+  // suite is the same machine the developer's Discord is open on. The contract
+  // that holds either way: the command reports state instead of rejecting, and
+  // the fleet summary it was given is what comes back.
   const status = await fake.invoke('presence.reconnect')
-  assert.equal(status.connected, false)
+  assert.equal(typeof status.connected, 'boolean')
   assert.equal(status.summary.working, 1)
-  assert.ok(status.lastError, 'expected the failed connect to be reported')
+  if (!status.connected) {
+    assert.ok(status.lastError, 'a failed connect must be reported')
+  }
   await deactivate()
 })
 

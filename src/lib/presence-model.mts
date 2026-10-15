@@ -62,12 +62,17 @@ export const HEADER_PRESETS: readonly string[] = [
 ]
 
 /**
- * Art asset keys from the Discord application's *Rich Presence → Art Assets*
- * tab. `orca` is the logo uploaded to the shipped application; pointing
- * `clientId` at your own application means uploading artwork under these keys
- * (or naming your own via `largeImage` / `largeText`).
+ * Default logo. This is a URL rather than an asset key because the shipped
+ * application hosts no artwork: publishing the key `orca` renders Discord's
+ * missing-asset placeholder (a question mark), which is what a fresh install
+ * showed before this default moved. An `https://` image is proxied by Discord
+ * once and cached, so it costs no per-publish request.
+ *
+ * Point `clientId` at your own application and `largeImage` back at an asset key
+ * you uploaded, if you prefer that.
  */
-export const DEFAULT_LARGE_IMAGE = 'orca'
+export const DEFAULT_LARGE_IMAGE =
+  'https://raw.githubusercontent.com/stablyai/orca/main/resources/app-icons/orca-blue.png'
 export const DEFAULT_LARGE_TEXT = 'Orca'
 
 /** Shown at `minimal` when the header has been blanked out. */
@@ -91,7 +96,17 @@ const FIELD_MAX = 128
 export const STALE_STATUS_MS = 6 * 60 * 60 * 1000
 
 export type WorktreeRecord = { path: string; branch: string }
-export type PaneRecord = { worktreeId: string | null; state: AgentStatusState; receivedAt: number }
+/**
+ * `agent` is not carried by the plugin event stream; it is joined in from the
+ * host's persisted agent rows (`agent-identity.mts`) and survives a worker reap
+ * through storage.
+ */
+export type PaneRecord = {
+  worktreeId: string | null
+  state: AgentStatusState
+  receivedAt: number
+  agent?: string
+}
 
 export type PresenceState = {
   worktrees: Map<string, WorktreeRecord>
@@ -109,6 +124,9 @@ export type PresenceSummary = {
   /** Ids of the worktrees with a working agent, sorted so payloads stay stable. */
   activeWorktreeIds: string[]
 }
+
+/** Pane whose agent ran most recently; drives the dynamic logo. */
+export type LatestAgent = { paneKey: string; agent: string; receivedAt: number }
 
 export function createPresenceState(): PresenceState {
   return { worktrees: new Map(), panes: new Map() }
@@ -163,11 +181,37 @@ export function applyAgentStatus(state: PresenceState, payload: unknown): Presen
   }
   const worktreeId = record?.['worktreeId']
   const receivedAt = record?.['receivedAt']
+  const previous = state.panes.get(paneKey)
   state.panes.set(paneKey, {
     worktreeId: typeof worktreeId === 'string' ? worktreeId : null,
     state: agentState,
-    receivedAt: typeof receivedAt === 'number' ? receivedAt : 0
+    receivedAt: typeof receivedAt === 'number' ? receivedAt : 0,
+    // Why: the event stream carries no agent identity, so a status update must
+    // not clear one an earlier identity join filled in.
+    ...(previous?.agent ? { agent: previous.agent } : {})
   })
+  return state
+}
+
+/**
+ * Joins host-persisted agent identities onto the panes already tracked.
+ * Identities for unknown panes are ignored: adopting them would inflate the
+ * fleet counts with panes Orca never projected to this plugin.
+ */
+export function applyAgentIdentities(
+  state: PresenceState,
+  identities: ReadonlyMap<string, { agent: string; receivedAt: number }>
+): PresenceState {
+  for (const [paneKey, pane] of state.panes) {
+    const identity = identities.get(paneKey)
+    if (!identity) {
+      continue
+    }
+    if (pane.agent === identity.agent) {
+      continue
+    }
+    state.panes.set(paneKey, { ...pane, agent: identity.agent })
+  }
   return state
 }
 
@@ -208,14 +252,44 @@ export function deserializeState(raw: unknown): PresenceState {
     if (record && isAgentState(record['state'])) {
       const worktreeId = record['worktreeId']
       const receivedAt = record['receivedAt']
+      const agent = record['agent']
       state.panes.set(paneKey, {
         worktreeId: typeof worktreeId === 'string' ? worktreeId : null,
         state: record['state'],
-        receivedAt: typeof receivedAt === 'number' ? receivedAt : 0
+        receivedAt: typeof receivedAt === 'number' ? receivedAt : 0,
+        ...(typeof agent === 'string' && agent ? { agent } : {})
       })
     }
   }
   return state
+}
+
+/**
+ * The pane whose agent ran most recently, among the panes Orca has given an
+ * identity to. This is what drives the dynamic logo: finish prompting in OMP,
+ * start a session in OpenCode, and the logo follows OpenCode.
+ *
+ * Ties and zero timestamps resolve by pane key so the choice is deterministic
+ * across worker restarts — an unstable payload would republish for nothing.
+ */
+export function latestAgent(state: PresenceState): LatestAgent | null {
+  let best: LatestAgent | null = null
+  for (const [paneKey, pane] of state.panes) {
+    if (!pane.agent) {
+      continue
+    }
+    const candidate = { paneKey, agent: pane.agent, receivedAt: pane.receivedAt }
+    if (!best) {
+      best = candidate
+      continue
+    }
+    if (candidate.receivedAt > best.receivedAt) {
+      best = candidate
+    } else if (candidate.receivedAt === best.receivedAt && candidate.paneKey < best.paneKey) {
+      best = candidate
+    }
+  }
+  return best
 }
 
 export function summarize(state: PresenceState): PresenceSummary {
@@ -424,6 +498,12 @@ export type BuildActivityInput = {
   /** Leading segment of the details line; `undefined` takes `DEFAULT_HEADER`. */
   header?: string | undefined
   assets?: PresenceAssets | undefined
+  /**
+   * Logo for the agent that ran most recently, when the dynamic logo is on.
+   * Resolved by the caller (which knows the settings); `undefined` publishes
+   * the configured `largeImage` instead.
+   */
+  agentImage?: { key: string; text?: string } | undefined
   /** Opaque party id; omitted, Discord may not render the party size at all. */
   partyId?: string | undefined
 }
@@ -448,6 +528,7 @@ export function buildActivity({
   startedAt,
   header,
   assets,
+  agentImage,
   partyId
 }: BuildActivityInput): DiscordActivity | null {
   if (privacy === 'off') {
@@ -475,8 +556,12 @@ export function buildActivity({
   if (typeof startedAt === 'number' && startedAt > 0) {
     activity.timestamps = { start: Math.floor(startedAt) }
   }
-  const largeImage = assets?.largeImage ?? DEFAULT_LARGE_IMAGE
-  const largeText = assets?.largeText ?? DEFAULT_LARGE_TEXT
+  // `assets.largeImage === ''` means "publish no image at all", so it outranks
+  // the dynamic logo and must not fall through to the default asset.
+  const imageOff = assets?.largeImage === ''
+  const dynamic = imageOff ? undefined : agentImage
+  const largeImage = imageOff ? '' : dynamic?.key || assets?.largeImage || DEFAULT_LARGE_IMAGE
+  const largeText = dynamic?.text || assets?.largeText || DEFAULT_LARGE_TEXT
   if (largeImage) {
     activity.assets = { large_image: largeImage }
     if (largeText) {

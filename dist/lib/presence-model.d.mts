@@ -37,12 +37,16 @@ export declare const DEFAULT_HEADER = "Orca";
  */
 export declare const HEADER_PRESETS: readonly string[];
 /**
- * Art asset keys from the Discord application's *Rich Presence → Art Assets*
- * tab. `orca` is the logo uploaded to the shipped application; pointing
- * `clientId` at your own application means uploading artwork under these keys
- * (or naming your own via `largeImage` / `largeText`).
+ * Default logo. This is a URL rather than an asset key because the shipped
+ * application hosts no artwork: publishing the key `orca` renders Discord's
+ * missing-asset placeholder (a question mark), which is what a fresh install
+ * showed before this default moved. An `https://` image is proxied by Discord
+ * once and cached, so it costs no per-publish request.
+ *
+ * Point `clientId` at your own application and `largeImage` back at an asset key
+ * you uploaded, if you prefer that.
  */
-export declare const DEFAULT_LARGE_IMAGE = "orca";
+export declare const DEFAULT_LARGE_IMAGE = "https://raw.githubusercontent.com/stablyai/orca/main/resources/app-icons/orca-blue.png";
 export declare const DEFAULT_LARGE_TEXT = "Orca";
 /**
  * Pane statuses older than this are dropped. The worker is reaped after 5
@@ -54,10 +58,16 @@ export type WorktreeRecord = {
     path: string;
     branch: string;
 };
+/**
+ * `agent` is not carried by the plugin event stream; it is joined in from the
+ * host's persisted agent rows (`agent-identity.mts`) and survives a worker reap
+ * through storage.
+ */
 export type PaneRecord = {
     worktreeId: string | null;
     state: AgentStatusState;
     receivedAt: number;
+    agent?: string;
 };
 export type PresenceState = {
     worktrees: Map<string, WorktreeRecord>;
@@ -74,10 +84,25 @@ export type PresenceSummary = {
     /** Ids of the worktrees with a working agent, sorted so payloads stay stable. */
     activeWorktreeIds: string[];
 };
+/** Pane whose agent ran most recently; drives the dynamic logo. */
+export type LatestAgent = {
+    paneKey: string;
+    agent: string;
+    receivedAt: number;
+};
 export declare function createPresenceState(): PresenceState;
 export declare function applyWorktreeCreated(state: PresenceState, payload: unknown): PresenceState;
 export declare function applyWorktreeRemoved(state: PresenceState, payload: unknown): PresenceState;
 export declare function applyAgentStatus(state: PresenceState, payload: unknown): PresenceState;
+/**
+ * Joins host-persisted agent identities onto the panes already tracked.
+ * Identities for unknown panes are ignored: adopting them would inflate the
+ * fleet counts with panes Orca never projected to this plugin.
+ */
+export declare function applyAgentIdentities(state: PresenceState, identities: ReadonlyMap<string, {
+    agent: string;
+    receivedAt: number;
+}>): PresenceState;
 export declare function pruneStale(state: PresenceState, now: number): PresenceState;
 /** Storage holds JSON, so Maps round-trip through plain objects. */
 export declare function serializeState(state: PresenceState): {
@@ -85,6 +110,15 @@ export declare function serializeState(state: PresenceState): {
     panes: Record<string, PaneRecord>;
 };
 export declare function deserializeState(raw: unknown): PresenceState;
+/**
+ * The pane whose agent ran most recently, among the panes Orca has given an
+ * identity to. This is what drives the dynamic logo: finish prompting in OMP,
+ * start a session in OpenCode, and the logo follows OpenCode.
+ *
+ * Ties and zero timestamps resolve by pane key so the choice is deterministic
+ * across worker restarts — an unstable payload would republish for nothing.
+ */
+export declare function latestAgent(state: PresenceState): LatestAgent | null;
 export declare function summarize(state: PresenceState): PresenceSummary;
 /**
  * Names of the workspaces (worktrees) that currently have a working agent.
@@ -148,6 +182,15 @@ export type BuildActivityInput = {
     /** Leading segment of the details line; `undefined` takes `DEFAULT_HEADER`. */
     header?: string | undefined;
     assets?: PresenceAssets | undefined;
+    /**
+     * Logo for the agent that ran most recently, when the dynamic logo is on.
+     * Resolved by the caller (which knows the settings); `undefined` publishes
+     * the configured `largeImage` instead.
+     */
+    agentImage?: {
+        key: string;
+        text?: string;
+    } | undefined;
     /** Opaque party id; omitted, Discord may not render the party size at all. */
     partyId?: string | undefined;
 };
@@ -164,7 +207,7 @@ export type BuildActivityInput = {
  * went from idle to busy, not process start, so the timer reads as "how long
  * this batch of work has been running".
  */
-export declare function buildActivity({ state, focus, privacy, startedAt, header, assets, partyId }: BuildActivityInput): DiscordActivity | null;
+export declare function buildActivity({ state, focus, privacy, startedAt, header, assets, agentImage, partyId }: BuildActivityInput): DiscordActivity | null;
 export declare function isPrivacyLevel(value: unknown): value is PrivacyLevel;
 export declare function nextPrivacy(current: PrivacyLevel): PrivacyLevel;
 /**

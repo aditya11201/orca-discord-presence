@@ -19,6 +19,11 @@
         "context": "global"
       },
       { "id": "presence.header", "title": "Discord Presence: Set Header", "context": "global" },
+      {
+        "id": "presence.logo",
+        "title": "Discord Presence: Toggle Agent Logo",
+        "context": "global"
+      },
       { "id": "presence.reconnect", "title": "Discord Presence: Reconnect", "context": "global" },
       {
         "id": "presence.status",
