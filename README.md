@@ -149,9 +149,8 @@ Every key is optional, and `""` means *off* rather than *default*. Restart Orca,
 
 ## The logo follows the agent
 
-The large image is not a fixed setting. The plugin tracks **which agent ran most
-re recently** — per pane, not per worktree — and publishes that agent's artwork
-as the logo, with its name as the hover text:
+The plugin selects the logo from the most recent agent status update, per pane
+rather than per worktree, and uses the agent's name as the hover text:
 
 ```text
 ┌──────────┐  Orca
@@ -159,8 +158,15 @@ as the logo, with its name as the hover text:
 └──────────┘  00:14 elapsed
 ```
 
-Finish prompting in OMP, start a session in OpenCode, and the logo is OpenCode's
-within a second of that agent's next status update.
+The next status update from OpenCode or OpenCode2 selects the OpenCode logo.
+Opening or focusing a tab alone does not select its agent. Updates are coalesced
+for 1.5 seconds and published no more than once every four seconds.
+
+If the logo stays Orca, check `dynamicAgentImage` in the plugin's `settings.json`.
+`false` pins the configured image, even after a plugin update. When it is `false`,
+run **Discord Presence: Toggle Agent Logo** once to enable dynamic artwork.
+Use **Reconnect** to publish immediately. If you edit the file instead, disable
+and re-enable the plugin to load the changed setting.
 
 ### Where the agent id comes from
 
