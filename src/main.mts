@@ -235,9 +235,10 @@ class PresenceRuntime {
    * — the presence keeps working with the Orca logo in that case.
    */
   readIdentities(): Map<string, { agent: string; receivedAt: number }> {
-    if (!this.#settings.dynamicAgentImage) {
-      return new Map()
-    }
+    // Why: no `dynamicAgentImage` guard here. Turning the logo off must stop
+    // publishing agent artwork, not stop *learning* which agent each pane runs —
+    // with the guard, a pane's identity never lands in storage, so re-enabling
+    // the logo later shows nothing until a fresh status event happens to arrive.
     return readAgentIdentities({ agentStateDir: this.#settings.agentStateDir })
   }
 
@@ -343,10 +344,9 @@ class PresenceRuntime {
     this.#focus = next
     // The identity join is cheap (one bounded file read) and the focus poll is
     // the only heartbeat while the fleet is quiet, so it doubles as the sweep
-    // that catches an agent switching panes without a status event.
-    if (this.#settings.dynamicAgentImage) {
-      this.onEvent((state) => applyAgentIdentities(state, this.readIdentities()))
-    }
+    // that catches an agent switching panes without a status event. It runs
+    // regardless of `dynamicAgentImage`: identities are state, not publication.
+    this.onEvent((state) => applyAgentIdentities(state, this.readIdentities()))
     // Orca still has no focus-change plugin event. Polling only helps if a
     // changed context triggers a publish; otherwise the new workspace sits in
     // memory until an unrelated agent event happens to arrive.

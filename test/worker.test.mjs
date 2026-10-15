@@ -7,7 +7,9 @@
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import activate, { deactivate, DEFAULT_CLIENT_ID } from '../dist/main.mjs'
@@ -415,5 +417,47 @@ test('malformed events do not take the worker down', async () => {
   await settle()
   const status = await fake.invoke('presence.status')
   assert.equal(status.summary.panes, 0)
+  await deactivate()
+})
+
+test('a pinned logo still learns which agent each pane runs', async () => {
+  // Regression: the identity read used to be gated on `dynamicAgentImage`, so
+  // pinning the logo also stopped recording identities — turning the logo back
+  // on later showed the fallback until a fresh status event happened to arrive.
+  const dir = mkdtempSync(join(tmpdir(), 'presence-identity-'))
+  mkdirSync(join(dir, 'agent-hooks'), { recursive: true })
+  writeFileSync(
+    join(dir, 'agent-hooks', 'last-status.json'),
+    JSON.stringify({
+      version: 2,
+      entries: { p1: { payload: { agentType: 'opencode2', state: 'working', receivedAt: 1 } } }
+    })
+  )
+  const fake = createFakeOrca({ settings: { dynamicAgentImage: false, agentStateDir: dir } })
+  await activate(fake.orca)
+  await settle()
+  await fake.emit('agent.status.changed', {
+    worktreeId: 'w1',
+    paneKey: 'p1',
+    state: 'working',
+    receivedAt: Date.now()
+  })
+  await settle()
+
+  const status = await fake.invoke('presence.status')
+  // The report still names the latest agent — that is the point: it is what the
+  // logo would use once re-enabled. What must not happen is publishing it.
+  assert.equal(status.agent, 'opencode2')
+  assert.equal(status.publishedImage, status.largeImage, 'pinned logo must stay pinned')
+  assert.ok(!status.publishedImage.includes('opencode'))
+
+  const stateWrites = fake.calls.filter(
+    (call) => call.method === 'storage.set' && call.params.key === 'presence-state'
+  )
+  assert.equal(
+    stateWrites.at(-1)?.params.value?.panes?.['p1']?.agent,
+    'opencode2',
+    'identity must still be recorded while the logo is pinned'
+  )
   await deactivate()
 })
