@@ -12,6 +12,7 @@
  * to reason about than two.
  */
 import { basename } from 'node:path';
+import { describeAgent } from './agent-identity.mjs';
 /** Orca's agent states, from `AGENT_STATUS_STATES` in the host. */
 export const AGENT_STATES = ['working', 'blocked', 'waiting', 'done'];
 export const PRIVACY_LEVELS = ['full', 'minimal', 'off'];
@@ -27,14 +28,14 @@ export const DEFAULT_PRIVACY = 'minimal';
  * that name cannot be set over IPC, so the header lives in `details` instead.
  * Set the setting to `""` to drop the segment entirely.
  */
-export const DEFAULT_HEADER = 'Orca';
+export const DEFAULT_HEADER = 'Orca · {agent}';
 /**
  * A header is a template, not a literal, so that a header naming the workspace
  * still obeys the privacy level. Baking `checkout-service` into the setting
  * would keep publishing it after a drop to `minimal`; `{workspace}` blanks out
  * instead.
  */
-const HEADER_TOKENS = /\{(workspace|branch)\}/g;
+const HEADER_TOKENS = /\{(workspace|branch|agent)\}/g;
 /** Segment separator inside a header template, and between details segments. */
 const SEGMENT_SEPARATOR = ' · ';
 /**
@@ -339,7 +340,8 @@ export function describeProject(focus, state) {
 /**
  * Expands a header template. `{workspace}` and `{branch}` resolve only at
  * `full`; at `minimal` they blank out, and a template left with nothing but
- * blanks falls back to the default name rather than publishing an empty line.
+ * blanks falls back to Orca. `{agent}` uses the same latest pane as the logo,
+ * including at `minimal` privacy and when agent artwork is disabled.
  *
  * Segments are split on `·` so that a token dropping out takes its separator
  * with it — `{workspace} · {branch}` reads as `Orca`, never as `· `.
@@ -350,16 +352,18 @@ export function renderHeader(template, { focus, state, privacy }) {
         return '';
     }
     const named = privacy === 'full';
+    const agent = trimmed.includes('{agent}') ? latestAgent(state) : null;
     const values = {
         workspace: named ? describeProject(focus, state) : '',
-        branch: named ? (focus?.branch.trim() ?? '') : ''
+        branch: named ? (focus?.branch.trim() ?? '') : '',
+        agent: agent ? describeAgent(agent.agent) : ''
     };
     const rendered = trimmed
         .split('·')
         .map((segment) => segment.replace(HEADER_TOKENS, (_, token) => values[token] ?? '').trim())
         .filter(Boolean)
         .join(SEGMENT_SEPARATOR);
-    return rendered || DEFAULT_HEADER;
+    return rendered || 'Orca';
 }
 /**
  * Next template in the cycle. A header the user typed by hand is not in the

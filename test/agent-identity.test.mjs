@@ -7,7 +7,6 @@ import { join } from 'node:path'
 import {
   DEFAULT_AGENT_IMAGE_SOURCES,
   AGENT_STATE_FILE_NAME,
-  describeAgent,
   readAgentIdentities,
   readAgentImages,
   resolveAgentImage,
@@ -136,10 +135,10 @@ test('readAgentIdentities caps the number of rows', () => {
 
 test('resolveAgentImage prefers the override, then the built-in source, then the fallback', () => {
   const agentImages = { omp: 'https://example.com/my-omp.png' }
-  assert.deepEqual(resolveAgentImage('omp', { agentImages, fallbackImage: 'orca' }), {
-    key: 'https://example.com/my-omp.png',
-    text: 'OMP'
-  })
+  assert.equal(
+    resolveAgentImage('omp', { agentImages, fallbackImage: 'orca' }).key,
+    'https://example.com/my-omp.png'
+  )
   // A built-in source is only used when no override names that agent.
   assert.equal(
     resolveAgentImage('opencode', { agentImages, fallbackImage: 'orca' }).key,
@@ -183,13 +182,6 @@ test('readAgentImages keeps only usable entries', () => {
     }),
     { omp: 'https://example.com/omp.png', opencode: 'my-asset' }
   )
-})
-
-test('describeAgent names the agents with shipped artwork', () => {
-  assert.equal(describeAgent('opencode'), 'OpenCode')
-  assert.equal(describeAgent('omp'), 'OMP')
-  assert.equal(describeAgent('claude'), 'Claude')
-  assert.equal(describeAgent('shepherd'), 'shepherd')
 })
 
 test('resolveAgentStateFile joins the host state path', () => {

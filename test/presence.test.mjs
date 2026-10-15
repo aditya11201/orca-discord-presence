@@ -272,9 +272,10 @@ test('full privacy publishes header, project and branch', () => {
     state,
     focus: { displayName: 'checkout-service', branch: 'main' },
     privacy: 'full',
+    header: 'Fleet',
     startedAt: 1000
   })
-  assert.equal(activity.details, `${DEFAULT_HEADER} · checkout-service · main`)
+  assert.equal(activity.details, 'Fleet · checkout-service · main')
   assert.equal(activity.timestamps.start, 1000)
 })
 
@@ -308,9 +309,6 @@ test('header tokens blank out at minimal, taking their separators with them', ()
     state,
     privacy: 'minimal'
   }
-  // Falls back to the default name rather than publishing an empty line.
-  assert.equal(renderHeader('{workspace}', context), DEFAULT_HEADER)
-  assert.equal(renderHeader('{workspace} · {branch}', context), DEFAULT_HEADER)
   assert.equal(renderHeader('Orca · {workspace}', context), 'Orca')
 
   const activity = buildActivity({
@@ -322,6 +320,37 @@ test('header tokens blank out at minimal, taking their separators with them', ()
   const encoded = JSON.stringify(activity)
   assert.ok(!encoded.includes('secret-client'), encoded)
   assert.ok(!encoded.includes('acme'), encoded)
+})
+
+test('agent headers follow the latest pane without depending on artwork', () => {
+  const state = createPresenceState()
+  const input = {
+    state,
+    focus: { displayName: 'secret-client', branch: 'feat/private' },
+    privacy: 'minimal',
+    assets: { largeImage: '' }
+  }
+  assert.equal(buildActivity(input).details, 'Orca')
+
+  applyAgentStatus(state, agentStatus('omp-pane', 'working', 100))
+  applyAgentIdentities(state, new Map([['omp-pane', { agent: 'omp', receivedAt: 100 }]]))
+  assert.equal(buildActivity(input).details, 'Orca · Oh My Pi (OMP)')
+
+  applyAgentStatus(state, agentStatus('opencode-pane', 'working', 200))
+  applyAgentIdentities(
+    state,
+    new Map([['opencode-pane', { agent: 'opencode2', receivedAt: 200 }]])
+  )
+  assert.equal(buildActivity(input).details, 'Orca · OpenCode 2')
+  assert.equal(buildActivity(input).state, '2 agents working')
+  assert.equal(
+    buildActivity({ ...input, header: 'Using {agent} · {workspace} · {branch}' }).details,
+    'Using OpenCode 2'
+  )
+  assert.equal(buildActivity({ ...input, header: '' }).details, undefined)
+
+  applyAgentStatus(state, agentStatus('omp-pane', 'working', 300))
+  assert.equal(buildActivity(input).details, 'Orca · Oh My Pi (OMP)')
 })
 
 test('a token header does not repeat the project it already names', () => {
@@ -460,8 +489,8 @@ test('off privacy publishes nothing at all', () => {
 test('full privacy degrades when the host has no focus context', () => {
   const state = createPresenceState()
   applyWorktreeCreated(state, { worktreeId: 'w1', path: '/repos/app', branch: 'main' })
-  const activity = buildActivity({ state, focus: null, privacy: 'full', startedAt: 0 })
-  assert.equal(activity.details, `${DEFAULT_HEADER} · app`)
+  const activity = buildActivity({ state, focus: null, privacy: 'full', header: '', startedAt: 0 })
+  assert.equal(activity.details, 'app')
   assert.equal(activity.timestamps, undefined)
 })
 

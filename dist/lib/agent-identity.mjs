@@ -164,9 +164,9 @@ export const DEFAULT_AGENT_IMAGE_SOURCES = Object.freeze({
 });
 /** Display names for the agents Orca ships artwork for. */
 const AGENT_DISPLAY_NAMES = Object.freeze({
-    omp: 'OMP',
+    omp: 'Oh My Pi (OMP)',
     opencode: 'OpenCode',
-    opencode2: 'OpenCode',
+    opencode2: 'OpenCode 2',
     claude: 'Claude',
     openclaude: 'OpenClaude'
 });

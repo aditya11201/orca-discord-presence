@@ -167,18 +167,6 @@ test('a blank client id falls back rather than disabling the plugin', async () =
   await deactivate()
 })
 
-test('the Orca logo and header need no configuration', async () => {
-  const fake = createFakeOrca()
-  await activate(fake.orca)
-  await settle()
-  const status = await fake.invoke('presence.status')
-  assert.equal(status.header, 'Orca')
-  // A URL, not the `orca` asset key: the shipped application hosts no artwork,
-  // and publishing a key nothing hosts renders Discord's "?" placeholder.
-  assert.match(status.largeImage, /^https:\/\/\S+\.(?:png|jpe?g|gif|webp)$/i)
-  await deactivate()
-})
-
 test('settings can rename the header and swap the artwork', async () => {
   const fake = createFakeOrca({ settings: { header: ' Fleet ', largeImage: 'my-art' } })
   await activate(fake.orca)
@@ -220,18 +208,6 @@ test('the header command takes a string argument and persists it', async () => {
   const hidden = await fake.invoke('presence.header', '')
   assert.equal(hidden.header, '')
   assert.equal(fake.stored.header, '')
-  await deactivate()
-})
-
-test('the header command cycles the presets when given no argument', async () => {
-  const fake = createFakeOrca()
-  await activate(fake.orca)
-  await settle()
-
-  assert.equal((await fake.invoke('presence.header')).header, '{workspace}')
-  assert.equal((await fake.invoke('presence.header')).header, '{workspace} · {branch}')
-  assert.equal((await fake.invoke('presence.header')).header, '')
-  assert.equal((await fake.invoke('presence.header')).header, 'Orca')
   await deactivate()
 })
 

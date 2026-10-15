@@ -1,13 +1,13 @@
 # Orca Discord Presence
 
-Publishes what your [Orca](https://github.com/stablyai/orca) agent fleet is doing to your Discord status, next to the Orca logo.
+Publishes your [Orca](https://github.com/stablyai/orca) agent fleet's activity to Discord, with the latest agent's name and artwork.
 
 ```text
-┌──────┐  Orca                                              ← minimal (default)
+┌──────┐  Orca · OpenCode 2                                 ← minimal (default)
 │ logo │  2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
 └──────┘  00:14 elapsed
 
-┌──────┐  Orca · checkout-service · feat/ipc                ← full
+┌──────┐  Orca · OpenCode 2 · checkout-service · feat/ipc     ← full
 │ logo │  2 agents working · 1 blocked · in checkout-service, web   (3 of 5)
 └──────┘  00:14 elapsed
 ```
@@ -81,9 +81,15 @@ The **Set Header** command is the way in that does not involve a text editor:
 - **With an argument** — the argument becomes the header, so a keybinding or automation can set it outright: `"My Fleet"`, or `{ "header": "My Fleet" }`. An empty string hides the header.
 - **With no argument** — it cycles the presets, which is all the command palette can drive on its own:
 
-  `Orca` → `{workspace}` → `{workspace} · {branch}` → *hidden* → `Orca` → …
+  `Orca · {agent}` → `{workspace}` → `{workspace} · {branch}` → *hidden* → `Orca · {agent}` → …
 
 `{workspace}` and `{branch}` are resolved at publish time, not frozen into the setting, and that distinction is the whole point. A header of `checkout-service` keeps publishing that name after a drop to `minimal`; `{workspace}` blanks out and falls back to `Orca`. A token that resolves to nothing takes its separator with it, so the line never trails a stray middle dot.
+
+`{agent}` shows the latest agent's display name, such as `OpenCode 2` or
+`Oh My Pi (OMP)`. It follows the same pane as the dynamic logo and remains
+available at `minimal` privacy or with artwork disabled. If no identity is
+known, the agent segment disappears and the default header reads `Orca`.
+Custom headers are preserved; include `{agent}` to make them agent-aware.
 
 ### The logo and the badge
 
@@ -123,7 +129,7 @@ Orca has no UI for per-plugin settings yet, so anything the commands do not cove
   "enabled": true,
   "privacy": "minimal",
   "clientId": "1234567890123456789",
-  "header": "Orca",
+  "header": "Orca · {agent}",
   "largeImage": "orca",
   "largeText": "Orca",
   "smallImage": "",
@@ -136,7 +142,7 @@ Orca has no UI for per-plugin settings yet, so anything the commands do not cove
 | `enabled` | `true` | Publish at all |
 | `privacy` | `"minimal"` | See [Privacy](#privacy) |
 | `clientId` | shipped id | The Discord application to publish through |
-| `header` | `"Orca"` | Line one; takes `{workspace}` and `{branch}`; `""` hides it |
+| `header` | `"Orca · {agent}"` | Line one; takes `{agent}`, `{workspace}`, and `{branch}`; `""` hides it |
 | `largeImage` | *(Orca logo URL)* | Asset key or `https://` image URL for the logo; `""` publishes no image |
 | `largeText` | `"Orca"` | Tooltip when hovering the logo |
 | `dynamicAgentImage` | `true` | Follow the latest agent's logo instead of the pinned one |
@@ -153,7 +159,7 @@ The plugin selects the logo from the most recent agent status update, per pane
 rather than per worktree, and uses the agent's name as the hover text:
 
 ```text
-┌──────────┐  Orca
+┌──────────┐  Orca · Oh My Pi (OMP)
 │  OMP     │  2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
 └──────────┘  00:14 elapsed
 ```

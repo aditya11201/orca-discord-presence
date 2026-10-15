@@ -194,9 +194,9 @@ export const DEFAULT_AGENT_IMAGE_SOURCES: Readonly<Record<string, string>> = Obj
 
 /** Display names for the agents Orca ships artwork for. */
 const AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = Object.freeze({
-  omp: 'OMP',
+  omp: 'Oh My Pi (OMP)',
   opencode: 'OpenCode',
-  opencode2: 'OpenCode',
+  opencode2: 'OpenCode 2',
   claude: 'Claude',
   openclaude: 'OpenClaude'
 })

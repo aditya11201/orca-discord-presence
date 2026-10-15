@@ -13,6 +13,7 @@
  */
 
 import { basename } from 'node:path'
+import { describeAgent } from './agent-identity.mjs'
 // Type-only, so the model still pulls in no IPC code at runtime.
 import type { DiscordActivity } from './discord-ipc.mjs'
 import type { AgentStatusState, WorkspaceContext } from './orca-api.mjs'
@@ -36,7 +37,7 @@ export const DEFAULT_PRIVACY: PrivacyLevel = 'minimal'
  * that name cannot be set over IPC, so the header lives in `details` instead.
  * Set the setting to `""` to drop the segment entirely.
  */
-export const DEFAULT_HEADER = 'Orca'
+export const DEFAULT_HEADER = 'Orca · {agent}'
 
 /**
  * A header is a template, not a literal, so that a header naming the workspace
@@ -44,7 +45,7 @@ export const DEFAULT_HEADER = 'Orca'
  * would keep publishing it after a drop to `minimal`; `{workspace}` blanks out
  * instead.
  */
-const HEADER_TOKENS = /\{(workspace|branch)\}/g
+const HEADER_TOKENS = /\{(workspace|branch|agent)\}/g
 
 /** Segment separator inside a header template, and between details segments. */
 const SEGMENT_SEPARATOR = ' · '
@@ -426,7 +427,8 @@ export type HeaderContext = {
 /**
  * Expands a header template. `{workspace}` and `{branch}` resolve only at
  * `full`; at `minimal` they blank out, and a template left with nothing but
- * blanks falls back to the default name rather than publishing an empty line.
+ * blanks falls back to Orca. `{agent}` uses the same latest pane as the logo,
+ * including at `minimal` privacy and when agent artwork is disabled.
  *
  * Segments are split on `·` so that a token dropping out takes its separator
  * with it — `{workspace} · {branch}` reads as `Orca`, never as `· `.
@@ -437,16 +439,18 @@ export function renderHeader(template: string, { focus, state, privacy }: Header
     return ''
   }
   const named = privacy === 'full'
+  const agent = trimmed.includes('{agent}') ? latestAgent(state) : null
   const values: Record<string, string> = {
     workspace: named ? describeProject(focus, state) : '',
-    branch: named ? (focus?.branch.trim() ?? '') : ''
+    branch: named ? (focus?.branch.trim() ?? '') : '',
+    agent: agent ? describeAgent(agent.agent) : ''
   }
   const rendered = trimmed
     .split('·')
     .map((segment) => segment.replace(HEADER_TOKENS, (_, token: string) => values[token] ?? '').trim())
     .filter(Boolean)
     .join(SEGMENT_SEPARATOR)
-  return rendered || DEFAULT_HEADER
+  return rendered || 'Orca'
 }
 
 /**

@@ -29,7 +29,7 @@ export declare const DEFAULT_PRIVACY: PrivacyLevel;
  * that name cannot be set over IPC, so the header lives in `details` instead.
  * Set the setting to `""` to drop the segment entirely.
  */
-export declare const DEFAULT_HEADER = "Orca";
+export declare const DEFAULT_HEADER = "Orca \u00B7 {agent}";
 /**
  * What the **Set Header** command cycles through when the host hands it no
  * argument. Ends on `''` — hiding the header entirely is a real choice, and a
@@ -155,7 +155,8 @@ export type HeaderContext = {
 /**
  * Expands a header template. `{workspace}` and `{branch}` resolve only at
  * `full`; at `minimal` they blank out, and a template left with nothing but
- * blanks falls back to the default name rather than publishing an empty line.
+ * blanks falls back to Orca. `{agent}` uses the same latest pane as the logo,
+ * including at `minimal` privacy and when agent artwork is disabled.
  *
  * Segments are split on `·` so that a token dropping out takes its separator
  * with it — `{workspace} · {branch}` reads as `Orca`, never as `· `.
