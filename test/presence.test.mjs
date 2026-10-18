@@ -167,27 +167,32 @@ test('deserialize tolerates garbage', () => {
   assert.equal(summarize(deserializeState({ worktrees: 5 })).worktrees, 0)
 })
 
-test('describeActivity reads naturally at each fleet size', () => {
+test('working labels rotate at clock boundaries and stop when not working', () => {
   const state = createPresenceState()
-  assert.equal(describeActivity(summarize(state)), 'No agents running')
+  applyAgentStatus(state, agentStatus('pane', 'working', 100))
+  const input = { state, focus: null, privacy: 'minimal' }
+  for (const [elapsedMs, label] of [
+    [-1, 'Vibing'],
+    [0, 'Vibing'],
+    [29_999, 'Vibing'],
+    [30_000, 'Just vibing'],
+    [60_000, 'In the flow'],
+    [90_000, 'Vibing']
+  ]) {
+    assert.equal(
+      buildActivity({ ...input, elapsedMs }).state,
+      `${label} · 1 agent working`
+    )
+  }
 
-  applyAgentStatus(state, { paneKey: 'a', worktreeId: 'w1', state: 'done', receivedAt: 1 })
-  assert.equal(describeActivity(summarize(state)), 'Fleet idle')
-
-  applyAgentStatus(state, { paneKey: 'b', worktreeId: 'w1', state: 'working', receivedAt: 1 })
-  assert.equal(describeActivity(summarize(state)), '1 agent working')
-
-  applyAgentStatus(state, { paneKey: 'c', worktreeId: 'w2', state: 'working', receivedAt: 1 })
-  assert.equal(describeActivity(summarize(state)), '2 agents working · across 2 worktrees')
-
-  applyAgentStatus(state, { paneKey: 'd', worktreeId: 'w2', state: 'blocked', receivedAt: 1 })
-  assert.equal(describeActivity(summarize(state)), '2 agents working · 1 blocked · across 2 worktrees')
-
-  applyAgentStatus(state, { paneKey: 'e', worktreeId: 'w2', state: 'waiting', receivedAt: 1 })
-  assert.equal(
-    describeActivity(summarize(state)),
-    '2 agents working · 1 blocked · 1 waiting · across 2 worktrees'
-  )
+  for (const [status, expected] of [
+    ['blocked', '1 blocked'],
+    ['waiting', '1 waiting'],
+    ['done', 'Fleet idle']
+  ]) {
+    applyAgentStatus(state, agentStatus('pane', status, 200))
+    assert.equal(buildActivity({ ...input, elapsedMs: 30_000 }).state, expected)
+  }
 })
 
 test('a fleet waiting on the user is not idle', () => {
@@ -262,7 +267,7 @@ test('minimal privacy publishes no project or branch name', () => {
   const encoded = JSON.stringify(activity)
   assert.ok(!encoded.includes('secret-client'), encoded)
   assert.ok(!encoded.includes('acme'), encoded)
-  assert.equal(activity.state, '1 agent working')
+  assert.match(activity.state, /1 agent working$/)
 })
 
 test('full privacy publishes header, project and branch', () => {
@@ -285,6 +290,7 @@ test('a project matching the header is not repeated', () => {
     state,
     focus: { displayName: 'orca', branch: 'main' },
     privacy: 'full',
+    header: 'Orca',
     startedAt: 0
   })
   assert.equal(activity.details, 'Orca · main')
@@ -322,7 +328,7 @@ test('header tokens blank out at minimal, taking their separators with them', ()
   assert.ok(!encoded.includes('acme'), encoded)
 })
 
-test('agent headers follow the latest pane without depending on artwork', () => {
+test('agent-only headers follow the latest pane without depending on artwork', () => {
   const state = createPresenceState()
   const input = {
     state,
@@ -330,19 +336,18 @@ test('agent headers follow the latest pane without depending on artwork', () => 
     privacy: 'minimal',
     assets: { largeImage: '' }
   }
-  assert.equal(buildActivity(input).details, 'Orca')
+  assert.doesNotMatch(buildActivity(input).details ?? '', /Orca/)
 
   applyAgentStatus(state, agentStatus('omp-pane', 'working', 100))
   applyAgentIdentities(state, new Map([['omp-pane', { agent: 'omp', receivedAt: 100 }]]))
-  assert.equal(buildActivity(input).details, 'Orca · Oh My Pi (OMP)')
+  assert.equal(buildActivity(input).details, 'Oh My Pi (OMP)')
 
   applyAgentStatus(state, agentStatus('opencode-pane', 'working', 200))
   applyAgentIdentities(
     state,
     new Map([['opencode-pane', { agent: 'opencode2', receivedAt: 200 }]])
   )
-  assert.equal(buildActivity(input).details, 'Orca · OpenCode 2')
-  assert.equal(buildActivity(input).state, '2 agents working')
+  assert.equal(buildActivity(input).details, 'OpenCode 2')
   assert.equal(
     buildActivity({ ...input, header: 'Using {agent} · {workspace} · {branch}' }).details,
     'Using OpenCode 2'
@@ -350,7 +355,7 @@ test('agent headers follow the latest pane without depending on artwork', () => 
   assert.equal(buildActivity({ ...input, header: '' }).details, undefined)
 
   applyAgentStatus(state, agentStatus('omp-pane', 'working', 300))
-  assert.equal(buildActivity(input).details, 'Orca · Oh My Pi (OMP)')
+  assert.equal(buildActivity(input).details, 'Oh My Pi (OMP)')
 })
 
 test('a token header does not repeat the project it already names', () => {
@@ -392,7 +397,7 @@ test('the header is configurable and can be turned off with a blank string', () 
 
   const off = buildActivity({ state, focus: null, privacy: 'minimal', header: '' })
   assert.equal(off.details, undefined)
-  assert.equal(off.state, '1 agent working')
+  assert.match(off.state, /1 agent working$/)
 
   const withProject = buildActivity({
     state,
@@ -442,7 +447,7 @@ test('full privacy names the workspaces the agents are working in', () => {
     focus: { displayName: 'api', branch: 'main' },
     privacy: 'full'
   })
-  assert.equal(activity.state, '2 agents working · in api, web')
+  assert.match(activity.state, / · in api, web$/)
 })
 
 test('a worktree without a path falls back to its branch as a name', () => {
@@ -458,7 +463,7 @@ test('an unnamed worktree degrades to the worktree count', () => {
   applyAgentStatus(state, { paneKey: 'a', worktreeId: 'w1', state: 'working', receivedAt: 1 })
   applyAgentStatus(state, { paneKey: 'b', worktreeId: 'w2', state: 'working', receivedAt: 1 })
   const activity = buildActivity({ state, focus: null, privacy: 'full' })
-  assert.equal(activity.state, '2 agents working · across 2 worktrees')
+  assert.match(activity.state, / · across 2 worktrees$/)
 })
 
 test('a long workspace list collapses into a remainder count', () => {
@@ -468,7 +473,7 @@ test('a long workspace list collapses into a remainder count', () => {
     applyAgentStatus(state, { paneKey: name, worktreeId: name, state: 'working', receivedAt: 1 })
   }
   const activity = buildActivity({ state, focus: null, privacy: 'full' })
-  assert.equal(activity.state, '5 agents working · in api, cli, docs +2')
+  assert.match(activity.state, / · in api, cli, docs \+2$/)
 })
 
 test('minimal privacy keeps workspace names out of the status line', () => {
@@ -477,7 +482,6 @@ test('minimal privacy keeps workspace names out of the status line', () => {
   applyAgentStatus(state, { paneKey: 'a', worktreeId: 'w1', state: 'working', receivedAt: 1 })
   const activity = buildActivity({ state, focus: null, privacy: 'minimal' })
   assert.ok(!JSON.stringify(activity).includes('secret-client'))
-  assert.equal(activity.state, '1 agent working')
 })
 
 test('off privacy publishes nothing at all', () => {

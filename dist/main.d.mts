@@ -21,18 +21,20 @@ import { type PresenceSummary, type PrivacyLevel } from './lib/presence-model.mj
  * `clientId` in settings to publish under your own application instead (the
  * application's name is what Discord shows as the "Playing …" line).
  */
-export declare const DEFAULT_CLIENT_ID = "1534192299926360234";
+export declare const DEFAULT_CLIENT_ID = "1560068042283687946";
 export type PresenceStatusReport = {
     enabled: boolean;
     privacy: PrivacyLevel;
     connected: boolean;
     socketPath: string | null;
-    /** False once `clientId` in settings points at the user's own application. */
+    /** Whether the configured id matches this fork's default Discord application. */
     usingDefaultApplication: boolean;
     /** The header template as configured — may still hold `{workspace}`. */
     header: string;
     /** The header as published, tokens resolved against the current privacy. */
     headerText: string;
+    /** Unix ms Discord's elapsed timer counts from; 0 until the first publish. */
+    sessionStartedAt: number;
     /** Art asset key published as the large image; empty when turned off. */
     largeImage: string;
     /** Agent whose logo is published; `null` when the dynamic logo is off/unresolved. */

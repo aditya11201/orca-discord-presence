@@ -3,16 +3,16 @@
 Publishes your [Orca](https://github.com/stablyai/orca) agent fleet's activity to Discord, with the latest agent's name and artwork.
 
 ```text
-┌──────┐  Orca · OpenCode 2                                 ← minimal (default)
-│ logo │  2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
+┌──────┐  OpenCode 2                                       ← minimal (default)
+│ logo │  Vibing · 2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
 └──────┘  00:14 elapsed
 
-┌──────┐  Orca · OpenCode 2 · checkout-service · feat/ipc     ← full
-│ logo │  2 agents working · 1 blocked · in checkout-service, web   (3 of 5)
+┌──────┐  OpenCode 2 · checkout-service · feat/ipc           ← full
+│ logo │  Vibing · 2 agents working · 1 blocked · in checkout-service, web   (3 of 5)
 └──────┘  00:14 elapsed
 ```
 
-Line one is the **header**, and it is yours to set. Line two is the fleet, ending in Discord's own party gauge: busy agents out of the agents Orca has announced. The timer measures the current stretch of work, not how long Orca has been open.
+Line one is the **header**, and it is yours to set. Line two is the fleet, ending in Discord's own party gauge: busy agents out of the agents Orca has announced. The timer counts how long this Orca session has been open: it starts once and does not restart when an agent starts or stops.
 
 An agent counts as busy while it is `working`, `blocked`, or `waiting` — Orca renders the last two identically, as "agent needs user attention", so a fleet sitting on permission prompts keeps the timer running instead of reading as idle.
 
@@ -23,7 +23,7 @@ TypeScript, no runtime dependencies — the Discord Rich Presence IPC protocol i
 - Orca `>= 1.4.0` with the plugin system enabled (Settings → Plugins) — last verified against Orca `1.4.192`, see [Compatibility](#compatibility)
 - The Discord **desktop** app running on the same machine (the web client exposes no local IPC socket)
 
-Nothing else. The plugin ships with a Discord application id and starts publishing as soon as an agent does something.
+The default Discord application is **Orca ADE** (`1560068042283687946`). The plugin starts publishing as soon as an agent does something.
 
 ## Install
 
@@ -81,23 +81,34 @@ The **Set Header** command is the way in that does not involve a text editor:
 - **With an argument** — the argument becomes the header, so a keybinding or automation can set it outright: `"My Fleet"`, or `{ "header": "My Fleet" }`. An empty string hides the header.
 - **With no argument** — it cycles the presets, which is all the command palette can drive on its own:
 
-  `Orca · {agent}` → `{workspace}` → `{workspace} · {branch}` → *hidden* → `Orca · {agent}` → …
+  `{agent}` → `{workspace}` → `{workspace} · {branch}` → *hidden* → `{agent}` → …
 
-`{workspace}` and `{branch}` are resolved at publish time, not frozen into the setting, and that distinction is the whole point. A header of `checkout-service` keeps publishing that name after a drop to `minimal`; `{workspace}` blanks out and falls back to `Orca`. A token that resolves to nothing takes its separator with it, so the line never trails a stray middle dot.
+`{workspace}` and `{branch}` resolve only at `full` privacy. At `minimal`, they blank out and take their separators with them. A template left with no visible text reads `AI Agent`.
 
 `{agent}` shows the latest agent's display name, such as `OpenCode 2` or
 `Oh My Pi (OMP)`. It follows the same pane as the dynamic logo and remains
-available at `minimal` privacy or with artwork disabled. If no identity is
-known, the agent segment disappears and the default header reads `Orca`.
+available at `minimal` privacy or with artwork disabled. The default header
+contains only the agent name, or `AI Agent` when no identity is known.
 Custom headers are preserved; include `{agent}` to make them agent-aware.
+
+### Working indicator
+
+While at least one agent is `working`, the status cycles through `Vibing`,
+`Just vibing`, and `In the flow`, followed by the real fleet counts. It reuses
+the 30-second refresh poll, so a change may lag a phase boundary by one poll.
+When no agent is working, the status shows the actual waiting, blocked, or idle
+summary instead.
+
+These are display-only labels, not agent thoughts or a task transcript. Prompt
+text, reasoning, assistant messages, and tool output are not sent to Discord.
 
 ### The logo and the badge
 
-`largeImage` defaults to **an `https://` image URL**, not an asset key — Discord proxies the URL once, caches it, and renders it like uploaded art. That is deliberate: the shipped application hosts **no** artwork, so an earlier default of the key `orca` rendered Discord's missing-asset placeholder (a question mark) on a fresh install.
+`largeImage` defaults to an `https://` image URL. Discord proxies and caches it, so the logos work without uploading art assets to the Discord application.
 
 Point `clientId` at your own application and you can go back to asset keys: upload a logo under *Rich Presence → Art Assets* and set `largeImage` to its key.
 
-`smallImage` is the badge in the logo's corner, and it is **off by default** — neither the shipped application nor the dynamic agent artwork hosts a badge, so a default would publish an empty square. Upload one to your own application and name its key to turn it on; a badge with no logo to sit on is dropped rather than published alone.
+`smallImage` is the badge in the logo's corner and is off by default. Set it to an uploaded asset key to show a badge. A badge is omitted when the large image is disabled.
 
 ### The party gauge
 
@@ -105,12 +116,12 @@ Discord renders `(3 of 5)` beside the status line: busy agents out of the panes 
 
 ### Publishing under your own Discord application
 
-The line *above* the header reads *"Playing \<application name\>"*, and that name belongs to the Discord application, not to this plugin — Rich Presence IPC has no field for it. That is what `header` exists for: it is the topmost line a plugin can control. To change the *"Playing …"* line itself, publish through an application of your own:
+The name above the header belongs to the Discord application selected by `clientId`. This build uses **Orca ADE** by default. To use another name, rename an application you own in the Developer Portal, or select another application you own. Renaming the application does not change its id, so `clientId` can stay the same:
 
 1. [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**
 2. Name it whatever the status should read as
 3. Copy the **Application ID** from *General Information* into `clientId`
-4. Upload artwork under *Rich Presence → Art Assets*, then set `largeImage` to its key
+4. Optionally upload artwork under *Rich Presence → Art Assets* and set `largeImage` to its key. URL-based agent logos need no upload.
 
 A Rich Presence application id is a public identifier — it travels in every client's IPC traffic and grants nothing on its own. The sensitive half is the OAuth client secret, which Rich Presence never needs and this plugin never asks for. That is why an id ships in the source.
 
@@ -129,7 +140,7 @@ Orca has no UI for per-plugin settings yet, so anything the commands do not cove
   "enabled": true,
   "privacy": "minimal",
   "clientId": "1234567890123456789",
-  "header": "Orca · {agent}",
+  "header": "{agent}",
   "largeImage": "orca",
   "largeText": "Orca",
   "smallImage": "",
@@ -141,8 +152,8 @@ Orca has no UI for per-plugin settings yet, so anything the commands do not cove
 | --- | --- | --- |
 | `enabled` | `true` | Publish at all |
 | `privacy` | `"minimal"` | See [Privacy](#privacy) |
-| `clientId` | shipped id | The Discord application to publish through |
-| `header` | `"Orca · {agent}"` | Line one; takes `{agent}`, `{workspace}`, and `{branch}`; `""` hides it |
+| `clientId` | Orca ADE application id | The Discord application to publish through |
+| `header` | `"{agent}"` | Line one; takes `{agent}`, `{workspace}`, and `{branch}`; `""` hides it |
 | `largeImage` | *(Orca logo URL)* | Asset key or `https://` image URL for the logo; `""` publishes no image |
 | `largeText` | `"Orca"` | Tooltip when hovering the logo |
 | `dynamicAgentImage` | `true` | Follow the latest agent's logo instead of the pinned one |
@@ -159,8 +170,8 @@ The plugin selects the logo from the most recent agent status update, per pane
 rather than per worktree, and uses the agent's name as the hover text:
 
 ```text
-┌──────────┐  Orca · Oh My Pi (OMP)
-│  OMP     │  2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
+┌──────────┐  Oh My Pi (OMP)
+│  OMP     │  Vibing · 2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
 └──────────┘  00:14 elapsed
 ```
 

@@ -22,13 +22,15 @@ export const PRIVACY_LEVELS = ['full', 'minimal', 'off'];
  * was enabled would be a bad default even though it is the more interesting one.
  */
 export const DEFAULT_PRIVACY = 'minimal';
+export const WORKING_LABEL_INTERVAL_MS = 30_000;
+const WORKING_LABELS = ['Vibing', 'Just vibing', 'In the flow'];
 /**
  * Leading segment of the details line — the closest thing to a card "header"
  * this plugin controls. Discord renders the application's own name above it and
  * that name cannot be set over IPC, so the header lives in `details` instead.
  * Set the setting to `""` to drop the segment entirely.
  */
-export const DEFAULT_HEADER = 'Orca · {agent}';
+export const DEFAULT_HEADER = '{agent}';
 /**
  * A header is a template, not a literal, so that a header naming the workspace
  * still obeys the privacy level. Baking `checkout-service` into the setting
@@ -283,8 +285,7 @@ function listNames(names) {
     return `${shown} +${names.length - MAX_WORKSPACE_NAMES}`;
 }
 /**
- * The status line. Ordered by what a reader would want to know first: agents
- * that need a human come before agents that do not.
+ * The status line: a display-only working label followed by the fleet counts.
  *
  * `blocked` and `waiting` are separate segments even though Orca renders both
  * as its `permission` status — the distinction is free here and tells a reader
@@ -294,10 +295,11 @@ function listNames(names) {
  * at `full` privacy — at `minimal` the trailing segment stays a bare count, so
  * the shape of the fleet still shows without leaking what it is working on.
  */
-export function describeActivity(summary, workspaces = []) {
+export function describeActivity(summary, workspaces = [], elapsedMs = 0) {
     const parts = [];
     if (summary.working > 0) {
-        parts.push(`${plural(summary.working, 'agent')} working`);
+        const phase = Math.floor(Math.max(0, elapsedMs) / WORKING_LABEL_INTERVAL_MS);
+        parts.push(WORKING_LABELS[phase % WORKING_LABELS.length] ?? WORKING_LABELS[0], `${plural(summary.working, 'agent')} working`);
     }
     if (summary.blocked > 0) {
         parts.push(`${summary.blocked} blocked`);
@@ -316,7 +318,7 @@ export function describeActivity(summary, workspaces = []) {
             parts.push(`across ${plural(summary.activeWorktrees, 'worktree')}`);
         }
     }
-    return parts.join(' · ');
+    return parts.join(SEGMENT_SEPARATOR);
 }
 /**
  * Project label from whatever the host gave us. `workspace.readContext` returns
@@ -340,11 +342,11 @@ export function describeProject(focus, state) {
 /**
  * Expands a header template. `{workspace}` and `{branch}` resolve only at
  * `full`; at `minimal` they blank out, and a template left with nothing but
- * blanks falls back to Orca. `{agent}` uses the same latest pane as the logo,
+ * blanks falls back to AI Agent. `{agent}` uses the same latest pane as the logo,
  * including at `minimal` privacy and when agent artwork is disabled.
  *
  * Segments are split on `·` so that a token dropping out takes its separator
- * with it — `{workspace} · {branch}` reads as `Orca`, never as `· `.
+ * with it, so `{workspace} · {branch}` never reads as `· `.
  */
 export function renderHeader(template, { focus, state, privacy }) {
     const trimmed = template.trim();
@@ -363,7 +365,7 @@ export function renderHeader(template, { focus, state, privacy }) {
         .map((segment) => segment.replace(HEADER_TOKENS, (_, token) => values[token] ?? '').trim())
         .filter(Boolean)
         .join(SEGMENT_SEPARATOR);
-    return rendered || 'Orca';
+    return rendered || 'AI Agent';
 }
 /**
  * Next template in the cycle. A header the user typed by hand is not in the
@@ -400,14 +402,14 @@ function dedupeSegments(segments) {
  *
  * The card reads top to bottom as:
  *
- *   Orca · my-app · feat/ipc      ← details: header, workspace, branch
- *   2 agents working · in my-app  ← state: fleet summary, workspaces at `full`
+ *   OpenCode 2 · my-app · feat/ipc        ← details: agent, workspace, branch
+ *   Vibing · 2 agents working · in my-app ← state: working label and fleet
  *
  * `startedAt` drives Discord's elapsed timer; it is the moment the fleet last
  * went from idle to busy, not process start, so the timer reads as "how long
  * this batch of work has been running".
  */
-export function buildActivity({ state, focus, privacy, startedAt, header, assets, agentImage, partyId }) {
+export function buildActivity({ state, focus, privacy, startedAt, elapsedMs = 0, header, assets, agentImage, partyId }) {
     if (privacy === 'off') {
         return null;
     }
@@ -426,7 +428,7 @@ export function buildActivity({ state, focus, privacy, startedAt, header, assets
         // header is all that survives, and a blanked header leaves details unset.
         activity.details = heading ? clampField(heading) : undefined;
     }
-    activity.state = clampField(describeActivity(summary, privacy === 'full' ? describeWorkspaces(state, summary) : []));
+    activity.state = clampField(describeActivity(summary, privacy === 'full' ? describeWorkspaces(state, summary) : [], elapsedMs));
     if (typeof startedAt === 'number' && startedAt > 0) {
         activity.timestamps = { start: Math.floor(startedAt) };
     }

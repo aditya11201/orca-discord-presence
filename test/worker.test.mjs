@@ -225,7 +225,8 @@ test('a workspace header resolves at full privacy and masks at minimal', async (
   const masked = await fake.invoke('presence.status')
   assert.equal(masked.privacy, 'minimal')
   assert.equal(masked.header, '{workspace} · {branch}')
-  assert.equal(masked.headerText, 'Orca')
+  assert.ok(!masked.headerText.includes('orca-discord-presence'))
+  assert.ok(!masked.headerText.includes('feat/presence'))
   await deactivate()
 })
 
@@ -266,6 +267,53 @@ test('agent state is persisted so a reaped worker can rehydrate', async () => {
   await settle()
   const status = await second.invoke('presence.status')
   assert.equal(status.summary.blocked, 1)
+  await deactivate()
+})
+
+test('the elapsed timer counts the session, not each stretch of work', async () => {
+  const fake = createFakeOrca()
+  await activate(fake.orca)
+  await settle()
+
+  const started = (await fake.invoke('presence.status')).sessionStartedAt
+  assert.ok(started > 0, 'the session stamp is written on activation')
+  assert.equal(fake.storage.get('session-since'), started)
+
+  // working → done → working must not move the clock: an agent starting or
+  // finishing changes the status line, never how long Orca has been open.
+  for (const state of ['working', 'done', 'working']) {
+    await fake.emit('agent.status.changed', {
+      worktreeId: 'w1',
+      paneKey: 'p1',
+      state,
+      receivedAt: Date.now()
+    })
+    await settle()
+    assert.equal((await fake.invoke('presence.status')).sessionStartedAt, started)
+    assert.equal(fake.storage.get('session-since'), started)
+  }
+
+  // A reaped worker restoring its state continues the same timer.
+  const second = createFakeOrca()
+  second.storage.set('session-since', started)
+  second.storage.set('presence-state', fake.storage.get('presence-state'))
+  await activate(second.orca)
+  await settle()
+  assert.equal((await second.invoke('presence.status')).sessionStartedAt, started)
+  await deactivate()
+})
+
+test('a legacy busy-since stamp is adopted as the session start', async () => {
+  const fake = createFakeOrca()
+  const legacy = Date.now() - 60_000
+  fake.storage.set('busy-since', legacy)
+  await activate(fake.orca)
+  await settle()
+
+  // Adopted, not restarted: upgrading keeps the current session's timer.
+  assert.equal((await fake.invoke('presence.status')).sessionStartedAt, legacy)
+  assert.equal(fake.storage.get('session-since'), legacy)
+  assert.equal(fake.storage.get('busy-since'), undefined, 'the legacy key is removed')
   await deactivate()
 })
 

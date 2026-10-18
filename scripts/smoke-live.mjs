@@ -6,6 +6,7 @@
  * Run: node smoke-live.mjs
  */
 import { DiscordPresenceClient } from '../dist/lib/discord-ipc.mjs'
+import { DEFAULT_CLIENT_ID } from '../dist/main.mjs'
 import { readAgentIdentities, resolveAgentImage } from '../dist/lib/agent-identity.mjs'
 import { candidateSocketPaths } from '../dist/lib/socket-path.mjs'
 import {
@@ -35,7 +36,7 @@ if (!path) {
   process.exit(1)
 }
 
-const client = new DiscordPresenceClient({ clientId: '1534192299926360234', log: () => {} })
+const client = new DiscordPresenceClient({ clientId: DEFAULT_CLIENT_ID, log: () => {} })
 await client.connect()
 console.log('connected:', client.socketPath)
 

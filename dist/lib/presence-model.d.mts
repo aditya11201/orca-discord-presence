@@ -23,13 +23,14 @@ export type PrivacyLevel = (typeof PRIVACY_LEVELS)[number];
  * was enabled would be a bad default even though it is the more interesting one.
  */
 export declare const DEFAULT_PRIVACY: PrivacyLevel;
+export declare const WORKING_LABEL_INTERVAL_MS = 30000;
 /**
  * Leading segment of the details line — the closest thing to a card "header"
  * this plugin controls. Discord renders the application's own name above it and
  * that name cannot be set over IPC, so the header lives in `details` instead.
  * Set the setting to `""` to drop the segment entirely.
  */
-export declare const DEFAULT_HEADER = "Orca \u00B7 {agent}";
+export declare const DEFAULT_HEADER = "{agent}";
 /**
  * What the **Set Header** command cycles through when the host hands it no
  * argument. Ends on `''` — hiding the header entirely is a real choice, and a
@@ -129,8 +130,7 @@ export declare function summarize(state: PresenceState): PresenceSummary;
  */
 export declare function describeWorkspaces(state: PresenceState, summary?: PresenceSummary): string[];
 /**
- * The status line. Ordered by what a reader would want to know first: agents
- * that need a human come before agents that do not.
+ * The status line: a display-only working label followed by the fleet counts.
  *
  * `blocked` and `waiting` are separate segments even though Orca renders both
  * as its `permission` status — the distinction is free here and tells a reader
@@ -140,7 +140,7 @@ export declare function describeWorkspaces(state: PresenceState, summary?: Prese
  * at `full` privacy — at `minimal` the trailing segment stays a bare count, so
  * the shape of the fleet still shows without leaking what it is working on.
  */
-export declare function describeActivity(summary: PresenceSummary, workspaces?: readonly string[]): string;
+export declare function describeActivity(summary: PresenceSummary, workspaces?: readonly string[], elapsedMs?: number): string;
 /**
  * Project label from whatever the host gave us. `workspace.readContext` returns
  * a display name for the focused worktree; a worktree seen only through
@@ -155,11 +155,11 @@ export type HeaderContext = {
 /**
  * Expands a header template. `{workspace}` and `{branch}` resolve only at
  * `full`; at `minimal` they blank out, and a template left with nothing but
- * blanks falls back to Orca. `{agent}` uses the same latest pane as the logo,
+ * blanks falls back to AI Agent. `{agent}` uses the same latest pane as the logo,
  * including at `minimal` privacy and when agent artwork is disabled.
  *
  * Segments are split on `·` so that a token dropping out takes its separator
- * with it — `{workspace} · {branch}` reads as `Orca`, never as `· `.
+ * with it, so `{workspace} · {branch}` never reads as `· `.
  */
 export declare function renderHeader(template: string, { focus, state, privacy }: HeaderContext): string;
 /**
@@ -180,6 +180,8 @@ export type BuildActivityInput = {
     focus: WorkspaceContext;
     privacy: PrivacyLevel;
     startedAt?: number;
+    /** Milliseconds in the current busy window; controls the display-only label. */
+    elapsedMs?: number;
     /** Leading segment of the details line; `undefined` takes `DEFAULT_HEADER`. */
     header?: string | undefined;
     assets?: PresenceAssets | undefined;
@@ -201,14 +203,14 @@ export type BuildActivityInput = {
  *
  * The card reads top to bottom as:
  *
- *   Orca · my-app · feat/ipc      ← details: header, workspace, branch
- *   2 agents working · in my-app  ← state: fleet summary, workspaces at `full`
+ *   OpenCode 2 · my-app · feat/ipc        ← details: agent, workspace, branch
+ *   Vibing · 2 agents working · in my-app ← state: working label and fleet
  *
  * `startedAt` drives Discord's elapsed timer; it is the moment the fleet last
  * went from idle to busy, not process start, so the timer reads as "how long
  * this batch of work has been running".
  */
-export declare function buildActivity({ state, focus, privacy, startedAt, header, assets, agentImage, partyId }: BuildActivityInput): DiscordActivity | null;
+export declare function buildActivity({ state, focus, privacy, startedAt, elapsedMs, header, assets, agentImage, partyId }: BuildActivityInput): DiscordActivity | null;
 export declare function isPrivacyLevel(value: unknown): value is PrivacyLevel;
 export declare function nextPrivacy(current: PrivacyLevel): PrivacyLevel;
 /**

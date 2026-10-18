@@ -23,6 +23,7 @@ import {
   DEFAULT_HEADER,
   DEFAULT_LARGE_IMAGE,
   DEFAULT_PRIVACY,
+  WORKING_LABEL_INTERVAL_MS,
   applyAgentStatus,
   applyWorktreeCreated,
   applyWorktreeRemoved,
@@ -31,7 +32,6 @@ import {
   deserializeState,
   describeActivity,
   describeWorkspaces,
-  isBusy,
   isPrivacyLevel,
   latestAgent,
   nextHeader,
@@ -53,7 +53,9 @@ import {
 } from './lib/agent-identity.mjs'
 
 const STORAGE_KEY = 'presence-state'
-const STORAGE_STARTED_AT_KEY = 'busy-since'
+const STORAGE_SESSION_KEY = 'session-since'
+/** Pre-session builds keyed the timer on the busy window; adopted once on load. */
+const LEGACY_STORAGE_BUSY_SINCE_KEY = 'busy-since'
 
 /**
  * Discord application backing the presence by default.
@@ -65,13 +67,12 @@ const STORAGE_STARTED_AT_KEY = 'busy-since'
  * `clientId` in settings to publish under your own application instead (the
  * application's name is what Discord shows as the "Playing …" line).
  */
-export const DEFAULT_CLIENT_ID = '1534192299926360234'
+export const DEFAULT_CLIENT_ID = '1560068042283687946'
 
 /** Coalesce bursts: a single agent transition can fan out several events. */
 const PUBLISH_DEBOUNCE_MS = 1_500
 /** Discord throttles SET_ACTIVITY at roughly 5 calls / 15s; stay well under. */
 const MIN_PUBLISH_INTERVAL_MS = 4_000
-const FOCUS_POLL_MS = 30_000
 const RECONNECT_DELAYS_MS = [15_000, 30_000, 60_000] as const
 
 /**
@@ -97,12 +98,14 @@ export type PresenceStatusReport = {
   privacy: PrivacyLevel
   connected: boolean
   socketPath: string | null
-  /** False once `clientId` in settings points at the user's own application. */
+  /** Whether the configured id matches this fork's default Discord application. */
   usingDefaultApplication: boolean
   /** The header template as configured — may still hold `{workspace}`. */
   header: string
   /** The header as published, tokens resolved against the current privacy. */
   headerText: string
+  /** Unix ms Discord's elapsed timer counts from; 0 until the first publish. */
+  sessionStartedAt: number
   /** Art asset key published as the large image; empty when turned off. */
   largeImage: string
   /** Agent whose logo is published; `null` when the dynamic logo is off/unresolved. */
@@ -186,13 +189,13 @@ class PresenceRuntime {
   #client: DiscordPresenceClient | null = null
   #connecting = false
   #reconnectAttempt = 0
-  #busySince = 0
+  #sessionSince = 0
   #lastPublishAt = 0
   #lastPayload = ''
   #focus: WorkspaceContext = null
   #publishTimer: NodeJS.Timeout | null = null
   #reconnectTimer: NodeJS.Timeout | null = null
-  #focusTimer: NodeJS.Timeout | null = null
+  #refreshTimer: NodeJS.Timeout | null = null
   #disposed = false
   #lastError: string | null = null
   /**
@@ -213,15 +216,40 @@ class PresenceRuntime {
 
   start(): void {
     void this.#bootstrap()
-    this.#focusTimer = setInterval(() => void this.#refreshFocus(), FOCUS_POLL_MS)
-    this.#focusTimer.unref?.()
+    // ponytail: reuse the refresh poll; use a phase timer if exact boundaries matter.
+    this.#refreshTimer = setInterval(() => {
+      void this.#refreshFocus()
+      if (this.#settings.enabled && this.#settings.privacy !== 'off') {
+        this.#schedulePublish()
+      }
+    }, WORKING_LABEL_INTERVAL_MS)
+    this.#refreshTimer.unref?.()
   }
 
   async #bootstrap(): Promise<void> {
     await this.#loadSettings()
     await this.#loadState()
+    this.#startSession()
     await this.#refreshFocus()
     this.#schedulePublish()
+  }
+
+  /**
+   * Discord's elapsed timer measures the Orca session, not a stretch of agent
+   * work, so the stamp is written once and never cleared: agents starting and
+   * stopping changes the status line but not the clock. Persisting it is what
+   * lets a reaped worker restore the same timer instead of restarting it.
+   */
+  #startSession(): void {
+    if (this.#sessionSince > 0) {
+      return
+    }
+    this.#sessionSince = Date.now()
+    if (this.#can('storage')) {
+      void this.#orca.host
+        .call('storage.set', { key: STORAGE_SESSION_KEY, value: this.#sessionSince })
+        .catch(() => {})
+    }
   }
 
   #can(capability: PluginCapabilityKind): boolean {
@@ -307,10 +335,35 @@ class PresenceRuntime {
     try {
       const stored = await this.#orca.host.call('storage.get', { key: STORAGE_KEY })
       this.#state = pruneStale(deserializeState(stored.value), Date.now())
-      const since = await this.#orca.host.call('storage.get', { key: STORAGE_STARTED_AT_KEY })
-      this.#busySince = typeof since.value === 'number' ? since.value : 0
+      const since = await this.#orca.host.call('storage.get', { key: STORAGE_SESSION_KEY })
+      if (typeof since.value === 'number') {
+        this.#sessionSince = since.value
+        return
+      }
+      await this.#adoptLegacySessionSince()
     } catch (error) {
       this.#orca.log(`could not restore state: ${describeError(error)}`)
+    }
+  }
+
+  /**
+   * Migrates a `busy-since` stamp written by a build whose timer restarted on
+   * every idle→busy transition. Adopting it rather than starting fresh keeps
+   * the current session's timer continuous across the upgrade.
+   */
+  async #adoptLegacySessionSince(): Promise<void> {
+    try {
+      const legacy = await this.#orca.host.call('storage.get', {
+        key: LEGACY_STORAGE_BUSY_SINCE_KEY
+      })
+      if (typeof legacy.value !== 'number') {
+        return
+      }
+      this.#sessionSince = legacy.value
+      await this.#orca.host.call('storage.set', { key: STORAGE_SESSION_KEY, value: legacy.value })
+      await this.#orca.host.call('storage.delete', { key: LEGACY_STORAGE_BUSY_SINCE_KEY })
+    } catch (error) {
+      this.#orca.log(`could not adopt the previous timer: ${describeError(error)}`)
     }
   }
 
@@ -367,30 +420,8 @@ class PresenceRuntime {
       return
     }
     pruneStale(this.#state, Date.now())
-    this.#trackBusyWindow()
     void this.#persistState()
     this.#schedulePublish()
-  }
-
-  /**
-   * Discord's elapsed timer should measure the current stretch of work, so the
-   * start stamp is set when the fleet goes idle→busy and cleared on the way back.
-   */
-  #trackBusyWindow(): void {
-    const busy = isBusy(summarize(this.#state))
-    if (busy && this.#busySince === 0) {
-      this.#busySince = Date.now()
-      if (this.#can('storage')) {
-        void this.#orca.host
-          .call('storage.set', { key: STORAGE_STARTED_AT_KEY, value: this.#busySince })
-          .catch(() => {})
-      }
-    } else if (!busy && this.#busySince !== 0) {
-      this.#busySince = 0
-      if (this.#can('storage')) {
-        void this.#orca.host.call('storage.delete', { key: STORAGE_STARTED_AT_KEY }).catch(() => {})
-      }
-    }
   }
 
   #schedulePublish(): void {
@@ -418,7 +449,8 @@ class PresenceRuntime {
       state: this.#state,
       focus: this.#focus,
       privacy: this.#settings.privacy,
-      startedAt: this.#busySince,
+      startedAt: this.#sessionSince,
+      elapsedMs: Date.now() - this.#sessionSince,
       header: this.#settings.header,
       assets: this.#settings.assets,
       agentImage: this.#agentImage(),
@@ -622,7 +654,10 @@ class PresenceRuntime {
     // point of the command is to show what Discord is being told.
     const body = [
       `${this.#settings.enabled ? 'Enabled' : 'Disabled'} · privacy: ${this.#settings.privacy}`,
-      [headerText, describeActivity(summary, this.#visibleWorkspaces(summary))]
+      [
+        headerText,
+        describeActivity(summary, this.#visibleWorkspaces(summary), Date.now() - this.#sessionSince)
+      ]
         .filter(Boolean)
         .join(' · '),
       this.#settings.dynamicAgentImage
@@ -641,6 +676,7 @@ class PresenceRuntime {
       usingDefaultApplication: this.#settings.clientId === DEFAULT_CLIENT_ID,
       header,
       headerText,
+      sessionStartedAt: this.#sessionSince,
       largeImage,
       agent: latest?.agent ?? null,
       publishedImage,
@@ -707,12 +743,12 @@ class PresenceRuntime {
     if (this.#reconnectTimer) {
       clearTimeout(this.#reconnectTimer)
     }
-    if (this.#focusTimer) {
-      clearInterval(this.#focusTimer)
+    if (this.#refreshTimer) {
+      clearInterval(this.#refreshTimer)
     }
     this.#publishTimer = null
     this.#reconnectTimer = null
-    this.#focusTimer = null
+    this.#refreshTimer = null
     this.#client?.close()
     this.#client = null
   }
