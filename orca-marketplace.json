@@ -1,12 +1,12 @@
 {
-  "name": "Lutica's Orca Plugins",
-  "owner": "LuticaCANARD",
+  "name": "aditya11201's Orca Plugins",
+  "owner": "aditya11201",
   "plugins": [
     {
-      "id": "lutica-canard.discord-presence",
+      "id": "aditya11201.discord-presence",
       "source": {
         "kind": "git",
-        "url": "https://github.com/LuticaCANARD/orca-discord-presence.git",
+        "url": "https://github.com/aditya11201/orca-discord-presence.git",
         "ref": "v0.2.0"
       },
       "description": "Publishes your Orca agent fleet's activity to Discord Rich Presence.",

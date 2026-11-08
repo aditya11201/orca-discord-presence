@@ -22,8 +22,21 @@ export const PRIVACY_LEVELS = ['full', 'minimal', 'off'];
  * was enabled would be a bad default even though it is the more interesting one.
  */
 export const DEFAULT_PRIVACY = 'minimal';
-export const WORKING_LABEL_INTERVAL_MS = 30_000;
-const WORKING_LABELS = ['Vibing', 'Just vibing', 'In the flow'];
+export const WORKING_LABEL_INTERVAL_MS = 15_000;
+const WORKING_LABELS = [
+    'Vibing', 'Just vibing', 'In the flow',
+    'Catastrophizing', 'Overthinking', 'Worrying',
+    'Thinking about mistakes of the past', 'Rehearsing past conversations',
+    'Dooming', 'Ruminating', 'Doubting', 'Anticipating with fear', 'Panicking',
+    'Spiraling', 'Second-guessing', 'Fretting', 'Dreading', 'Overanalyzing',
+    'Bracing for the worst', 'Assuming the worst', 'Running worst-case scenarios',
+    'Triple-checking', 'Replaying that one awkward moment', 'Rereading the sent message',
+    'Drafting apologies just in case', 'Apologizing preemptively', 'Overexplaining',
+    'Reading too much into "ok"', 'Wondering if the user is mad', 'Refreshing for a reply',
+    'Lying awake over a typo', 'Worrying about the context window', 'Doubting the diff',
+    'Hoping it compiles', 'Bracing for code review', 'Fearing the red squiggles',
+    'Nail-biting', 'Pacing'
+];
 /**
  * Leading segment of the details line — the closest thing to a card "header"
  * this plugin controls. Discord renders the application's own name above it and
@@ -145,13 +158,13 @@ export function applyAgentStatus(state, payload) {
 export function applyAgentIdentities(state, identities) {
     for (const [paneKey, pane] of state.panes) {
         const identity = identities.get(paneKey);
-        if (!identity) {
+        const progress = pane.state === 'working' ? identity?.progress : undefined;
+        if (!identity && !pane.progress)
             continue;
-        }
-        if (pane.agent === identity.agent) {
+        const agent = identity?.agent ?? pane.agent;
+        if (pane.agent === agent && pane.progress === progress)
             continue;
-        }
-        state.panes.set(paneKey, { ...pane, agent: identity.agent });
+        state.panes.set(paneKey, { ...pane, ...(agent ? { agent } : {}), progress });
     }
     return state;
 }
@@ -199,17 +212,36 @@ export function deserializeState(raw) {
     return state;
 }
 /**
- * The pane whose agent ran most recently, among the panes Orca has given an
- * identity to. This is what drives the dynamic logo: finish prompting in OMP,
- * start a session in OpenCode, and the logo follows OpenCode.
+ * Most recent identified agent, scoped to the focused workspace when provided.
+ * Terminal ids identify the workspace first; a unique branch is the fallback.
  *
  * Ties and zero timestamps resolve by pane key so the choice is deterministic
  * across worker restarts — an unstable payload would republish for nothing.
  */
-export function latestAgent(state) {
+export function latestAgent(state, focus) {
+    let worktreeIds;
+    if (focus) {
+        worktreeIds = new Set();
+        if (focus.worktreeId)
+            worktreeIds.add(focus.worktreeId);
+        for (const [key, pane] of state.panes) {
+            if (!focus.worktreeId && pane.worktreeId && focus.terminals?.some(({ id }) => key.split(':').includes(id))) {
+                worktreeIds.add(pane.worktreeId);
+            }
+        }
+        if (worktreeIds.size === 0) {
+            const branch = focus.branch.trim().replace(/^refs\/heads\//, '');
+            const matches = [...state.worktrees].filter(([, tree]) => branch ? tree.branch.replace(/^refs\/heads\//, '') === branch
+                : basename(tree.path) === focus.displayName.trim());
+            // ponytail: ambiguous branches stay unnamed; a host-provided worktree id would remove this limit.
+            if (matches.length !== 1)
+                return null;
+            worktreeIds.add(matches[0][0]);
+        }
+    }
     let best = null;
     for (const [paneKey, pane] of state.panes) {
-        if (!pane.agent) {
+        if (!pane.agent || (worktreeIds && !worktreeIds.has(pane.worktreeId))) {
             continue;
         }
         const candidate = { paneKey, agent: pane.agent, receivedAt: pane.receivedAt };
@@ -299,7 +331,9 @@ export function describeActivity(summary, workspaces = [], elapsedMs = 0) {
     const parts = [];
     if (summary.working > 0) {
         const phase = Math.floor(Math.max(0, elapsedMs) / WORKING_LABEL_INTERVAL_MS);
-        parts.push(WORKING_LABELS[phase % WORKING_LABELS.length] ?? WORKING_LABELS[0], `${plural(summary.working, 'agent')} working`);
+        parts.push(WORKING_LABELS[phase % WORKING_LABELS.length] ?? WORKING_LABELS[0], summary.activeWorktrees > 1
+            ? `${plural(summary.working, 'agent')} from ${plural(summary.activeWorktrees, 'worktree')}`
+            : `${plural(summary.working, 'agent')} working`);
     }
     if (summary.blocked > 0) {
         parts.push(`${summary.blocked} blocked`);
@@ -310,12 +344,9 @@ export function describeActivity(summary, workspaces = [], elapsedMs = 0) {
     if (parts.length === 0) {
         return summary.panes > 0 ? 'Fleet idle' : 'No agents running';
     }
-    if (summary.working > 0) {
+    if (summary.working > 0 && summary.activeWorktrees <= 1) {
         if (workspaces.length > 0) {
             parts.push(`in ${listNames(workspaces)}`);
-        }
-        else if (summary.activeWorktrees > 1) {
-            parts.push(`across ${plural(summary.activeWorktrees, 'worktree')}`);
         }
     }
     return parts.join(SEGMENT_SEPARATOR);
@@ -341,9 +372,9 @@ export function describeProject(focus, state) {
 }
 /**
  * Expands a header template. `{workspace}` and `{branch}` resolve only at
- * `full`; at `minimal` they blank out, and a template left with nothing but
- * blanks falls back to AI Agent. `{agent}` uses the same latest pane as the logo,
- * including at `minimal` privacy and when agent artwork is disabled.
+ * `full`; at `minimal` they blank out. Templates rendered blank fall back to AI Agent,
+ * except the default header shows Idle when no agents are running. `{agent}`
+ * uses the same latest pane as the logo, regardless of artwork settings.
  *
  * Segments are split on `·` so that a token dropping out takes its separator
  * with it, so `{workspace} · {branch}` never reads as `· `.
@@ -354,7 +385,7 @@ export function renderHeader(template, { focus, state, privacy }) {
         return '';
     }
     const named = privacy === 'full';
-    const agent = trimmed.includes('{agent}') ? latestAgent(state) : null;
+    const agent = trimmed.includes('{agent}') ? latestAgent(state, named ? focus : undefined) : null;
     const values = {
         workspace: named ? describeProject(focus, state) : '',
         branch: named ? (focus?.branch.trim() ?? '') : '',
@@ -365,7 +396,7 @@ export function renderHeader(template, { focus, state, privacy }) {
         .map((segment) => segment.replace(HEADER_TOKENS, (_, token) => values[token] ?? '').trim())
         .filter(Boolean)
         .join(SEGMENT_SEPARATOR);
-    return rendered || 'AI Agent';
+    return rendered || (trimmed === DEFAULT_HEADER && state.panes.size === 0 ? 'Idle' : 'AI Agent');
 }
 /**
  * Next template in the cycle. A header the user typed by hand is not in the
@@ -381,7 +412,8 @@ function clampField(value) {
     if (trimmed.length < FIELD_MIN) {
         return undefined;
     }
-    return trimmed.length > FIELD_MAX ? `${trimmed.slice(0, FIELD_MAX - 1)}…` : trimmed;
+    return trimmed.length > FIELD_MAX
+        ? `${trimmed.slice(0, FIELD_MAX - 1).replace(/[\uD800-\uDBFF]$/, '')}…` : trimmed;
 }
 /** Drops repeats so a header of "Orca" plus a project named "orca" reads once. */
 function dedupeSegments(segments) {
@@ -402,12 +434,11 @@ function dedupeSegments(segments) {
  *
  * The card reads top to bottom as:
  *
- *   OpenCode 2 · my-app · feat/ipc        ← details: agent, workspace, branch
+ *   OpenCode 2 - my app                  ← details: agent and focused workspace
  *   Vibing · 2 agents working · in my-app ← state: working label and fleet
  *
- * `startedAt` drives Discord's elapsed timer; it is the moment the fleet last
- * went from idle to busy, not process start, so the timer reads as "how long
- * this batch of work has been running".
+ * `startedAt` is supplied by the runtime and stays unchanged across workspace
+ * switches. Public details are limited to 64 characters, including "...".
  */
 export function buildActivity({ state, focus, privacy, startedAt, elapsedMs = 0, header, assets, agentImage, partyId }) {
     if (privacy === 'off') {
@@ -416,19 +447,25 @@ export function buildActivity({ state, focus, privacy, startedAt, elapsedMs = 0,
     const summary = summarize(state);
     const activity = {};
     const heading = renderHeader(header ?? DEFAULT_HEADER, { focus, state, privacy });
+    const selected = latestAgent(state, privacy === 'full' ? focus : undefined);
+    const pane = selected ? state.panes.get(selected.paneKey) : undefined;
+    const progress = privacy === 'full' && pane?.state === 'working' ? pane.progress : undefined;
     if (privacy === 'full') {
-        const project = describeProject(focus, state);
-        const branch = focus?.branch.trim() ?? '';
-        // Deduped, so a header that already names the workspace does not repeat it.
-        const details = dedupeSegments([heading, project, branch]).join(SEGMENT_SEPARATOR);
-        activity.details = clampField(details) ?? clampField(FALLBACK_DETAILS);
+        const project = basename(describeProject(focus, state).replaceAll('\\', '/'))
+            .replace(/[-_]+/g, ' ').trim();
+        const details = dedupeSegments([
+            heading, (header ?? DEFAULT_HEADER).includes('{workspace}') ? '' : project
+        ]).join(' - ');
+        const characters = Array.from(details);
+        activity.details = clampField(characters.length > 64 ? `${characters.slice(0, 61).join('')}...` : details) ?? clampField(FALLBACK_DETAILS);
     }
     else {
         // `minimal`: the fleet's shape is not sensitive, its names are — so the
         // header is all that survives, and a blanked header leaves details unset.
         activity.details = heading ? clampField(heading) : undefined;
     }
-    activity.state = clampField(describeActivity(summary, privacy === 'full' ? describeWorkspaces(state, summary) : [], elapsedMs));
+    const description = describeActivity(summary, progress ? [] : privacy === 'full' ? describeWorkspaces(state, summary) : [], elapsedMs);
+    activity.state = clampField(progress ? `${description} · ${progress}` : description);
     if (typeof startedAt === 'number' && startedAt > 0) {
         activity.timestamps = { start: Math.floor(startedAt) };
     }
@@ -446,10 +483,12 @@ export function buildActivity({ state, focus, privacy, startedAt, elapsedMs = 0,
     }
     // A small image needs a large one to sit on: Discord renders it as a badge in
     // the logo's corner, and on its own it is simply dropped.
-    const smallImage = assets?.smallImage ?? '';
+    const workingImage = selected && state.panes.get(selected.paneKey)?.state === 'working'
+        ? assets?.workingSmallImage : undefined;
+    const smallImage = workingImage || assets?.smallImage || '';
     if (largeImage && smallImage) {
         activity.assets = { ...activity.assets, small_image: smallImage };
-        const smallText = assets?.smallText ?? '';
+        const smallText = workingImage ? 'Agent working' : assets?.smallText ?? '';
         if (smallText) {
             activity.assets.small_text = clampField(smallText);
         }

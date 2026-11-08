@@ -23,19 +23,18 @@ const CAPABILITY_KINDS = [
   'workspace:read',
   'terminal:send',
   'notifications:show',
-  'storage',
-  'secrets',
-  'events:subscribe',
+  'storage:own',
+  'agent:read',
   'settings:own'
 ]
-const EVENT_NAMES = ['worktree.created', 'worktree.removed', 'agent.status.changed']
+const EVENT_NAMES = ['workspace.created', 'workspace.removed', 'agent.status.changed']
 
 test('identity fields match the host id grammar', () => {
-  assert.equal(manifest.manifestVersion, 1)
+  assert.equal(manifest.manifestVersion, 2)
+  assert.equal(manifest.execution, 'trusted-worker')
   assert.equal(manifest.pluginApi, 1)
   assert.match(manifest.id, PLUGIN_ID_RE)
-  assert.match(manifest.publisher, PLUGIN_ID_RE)
-  assert.ok(manifest.id.length <= 64 && manifest.publisher.length <= 64)
+  assert.ok(manifest.id.length <= 64)
   assert.match(manifest.version, SEMVER_RE)
   assert.match(manifest.engines.orca, ENGINE_RE)
   assert.ok(manifest.name.length >= 1 && manifest.name.length <= 256)
@@ -66,8 +65,8 @@ test('capabilities cover exactly what the worker calls', () => {
   const declared = new Set(manifest.capabilities.map((entry) => entry.kind))
   for (const required of [
     'workspace:read',
-    'events:subscribe',
-    'storage',
+    'agent:read',
+    'storage:own',
     'settings:own',
     'notifications:show'
   ]) {
@@ -88,7 +87,7 @@ test('command ids are portable and match what main.mjs registers', async () => {
     // `context` is optional upstream and defaults to `global`; declaring it
     // keeps the palette entry and any user-assigned shortcut unambiguous.
     assert.ok(
-      COMMAND_CONTEXTS.includes(command.context),
+      COMMAND_CONTEXTS.includes(command.when),
       `command ${command.id} needs a declared context`
     )
   }
@@ -144,9 +143,9 @@ test('marketplace index matches the host schema', () => {
 
 test('marketplace entry points at this plugin over an allowed git URL', () => {
   const entry = marketplace.plugins.find(
-    (plugin) => plugin.id === `${manifest.publisher}.${manifest.id}`
+    (plugin) => plugin.id.endsWith(`.${manifest.id}`)
   )
-  assert.ok(entry, `no entry for ${manifest.publisher}.${manifest.id}`)
+  assert.ok(entry, `no marketplace entry for ${manifest.id}`)
   assert.equal(entry.source.kind, 'git')
   // `isAllowedPluginGitUrl`: HTTPS or SSH only.
   assert.ok(
@@ -161,7 +160,7 @@ test('marketplace entry points at this plugin over an allowed git URL', () => {
 
 test('the marketplace ref pins a tag, not a moving branch', () => {
   const entry = marketplace.plugins.find(
-    (plugin) => plugin.id === `${manifest.publisher}.${manifest.id}`
+    (plugin) => plugin.id.endsWith(`.${manifest.id}`)
   )
   // A branch ref re-resolves to whatever HEAD happens to be on the next
   // marketplace refresh, so users would silently drift onto unreleased commits.
@@ -177,7 +176,7 @@ test('manifest, package, and release tag agree on the version', () => {
     readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')
   )
   const entry = marketplace.plugins.find(
-    (plugin) => plugin.id === `${manifest.publisher}.${manifest.id}`
+    (plugin) => plugin.id.endsWith(`.${manifest.id}`)
   )
   // Three places to bump; forgetting one ships a tag whose contents disagree
   // with what the marketplace claims to be installing.
@@ -188,7 +187,7 @@ test('manifest, package, and release tag agree on the version', () => {
 test('the README tells users to pin the released tag', () => {
   const readme = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8')
   const entry = marketplace.plugins.find(
-    (plugin) => plugin.id === `${manifest.publisher}.${manifest.id}`
+    (plugin) => plugin.id.endsWith(`.${manifest.id}`)
   )
   // Without the fragment Orca reads the index off the default branch, so a
   // README that lags the release quietly installs unreleased commits.

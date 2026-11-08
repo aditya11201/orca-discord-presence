@@ -16,9 +16,8 @@
  * unreadable, oversized, or reshaped all degrade to "no identity known" rather
  * than to an error), and every path is overridable through `agentStateDir`.
  *
- * Privacy: only the agent id is extracted. `payload.prompt`,
- * `payload.lastAssistantMessage`, terminal handles and remotes are never
- * copied, logged or published.
+ * Privacy: only agent ids and current-turn OMP intent labels are extracted.
+ * Prompts, assistant messages, and tool arguments are never copied or published.
  */
 /** Directory under userData holding the persisted agent status rows. */
 export declare const AGENT_STATE_DIR_NAME = "agent-hooks";
@@ -35,6 +34,7 @@ export declare const AGENT_ENTRY_LIMIT = 512;
 export type AgentIdentity = {
     agent: string;
     receivedAt: number;
+    progress?: string | undefined;
 };
 /**
  * Where `<userData>` lives, per platform. Deliberately derived from the worker

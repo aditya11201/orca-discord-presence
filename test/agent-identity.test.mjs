@@ -200,3 +200,51 @@ test('every built-in image source is an https image url', () => {
     assert.match(url, /^https:\/\/\S+\.(?:png|jpe?g|gif|webp)$/i, `${agent} -> ${url}`)
   }
 })
+
+test('OMP progress comes only from fresh tool markers in its linked session', async () => {
+  const { rmSync } = await import('node:fs')
+  const dir = mkdtempSync(join(tmpdir(), 'omp-progress-'))
+  try {
+    const transcriptPath = join(dir, 'session.jsonl')
+    const marker = (time, intent) => JSON.stringify({
+      type: 'custom', customType: 'tool_execution_start',
+      timestamp: new Date(time).toISOString(), data: { intent, args: { secret: 'PRIVATE' } }
+    })
+    writeFileSync(transcriptPath, [
+      JSON.stringify({ type: 'message', message: { prompt: 'PRIVATE'.repeat(30000) } }),
+      marker(1000, 'Old turn label'),
+      marker(2000, '\u001b[31mChecking ep\u001b[0m\nGKE deployment state'),
+      '{"incomplete":'
+    ].join('\n'))
+    const entry = {
+      payload: { agentType: 'omp', state: 'working', prompt: 'PRIVATE' },
+      receivedAt: 2100, turnStartedAt: 1500, providerSession: { transcriptPath }
+    }
+    writeStatusFile(dir, { pane: entry })
+    const read = () => readAgentIdentities({ agentStateDir: dir }).get('pane')
+    assert.equal(read().progress, 'Checking ep GKE deployment state')
+    assert.doesNotMatch(JSON.stringify(read()), /PRIVATE|args|prompt/)
+    writeFileSync(transcriptPath, marker(2500, 'Checking ' + '🚀'.repeat(80)))
+    assert.equal(Array.from(read().progress).length, 64)
+    assert.ok(read().progress.endsWith('...'))
+    entry.turnStartedAt = 3000
+    writeStatusFile(dir, { pane: entry })
+    assert.equal(read().progress, undefined)
+    entry.turnStartedAt = 1500
+    for (const state of ['done', 'waiting', 'blocked']) {
+      entry.payload.state = state
+      writeStatusFile(dir, { pane: entry })
+      assert.equal(read().progress, undefined)
+    }
+    entry.payload.state = 'working'
+    entry.payload.agentType = 'opencode2'
+    writeStatusFile(dir, { pane: entry })
+    assert.equal(read().progress, undefined)
+    entry.payload.agentType = 'omp'
+    entry.providerSession.transcriptPath = join(dir, 'missing.jsonl')
+    writeStatusFile(dir, { pane: entry })
+    assert.equal(read().progress, undefined)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -16,12 +16,12 @@
  * unreadable, oversized, or reshaped all degrade to "no identity known" rather
  * than to an error), and every path is overridable through `agentStateDir`.
  *
- * Privacy: only the agent id is extracted. `payload.prompt`,
- * `payload.lastAssistantMessage`, terminal handles and remotes are never
- * copied, logged or published.
+ * Privacy: only agent ids and current-turn OMP intent labels are extracted.
+ * Prompts, assistant messages, and tool arguments are never copied or published.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
+import { stripVTControlCharacters } from 'node:util';
 /** Directory under userData holding the persisted agent status rows. */
 export const AGENT_STATE_DIR_NAME = 'agent-hooks';
 /** File under that directory holding one row per pane key. */
@@ -95,6 +95,59 @@ function readRowReceivedAt(entry) {
     }
     return 0;
 }
+function readOmpProgress(entry) {
+    const payload = asRecord(entry['payload']);
+    const session = asRecord(entry['providerSession']);
+    const path = firstString(session?.['transcriptPath']);
+    const startedAt = entry['turnStartedAt'];
+    if (payload?.['state'] !== 'working' || !isAbsolute(path) || !path.endsWith('.jsonl') ||
+        typeof startedAt !== 'number' || !Number.isFinite(startedAt) || startedAt <= 0)
+        return undefined;
+    let fd;
+    try {
+        fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+        const file = fstatSync(fd);
+        if (!file.isFile() || file.size === 0)
+            return undefined;
+        // ponytail: 128 KiB tail; scan backward in chunks if large entries hide progress markers.
+        const length = Math.min(file.size, 128 * 1024);
+        const offset = file.size - length;
+        const buffer = Buffer.allocUnsafe(length);
+        const count = readSync(fd, buffer, 0, length, offset);
+        const lines = buffer.toString('utf8', 0, count).split('\n');
+        for (let index = lines.length - 1; index >= (offset > 0 ? 1 : 0); index--) {
+            let marker;
+            try {
+                marker = asRecord(JSON.parse(lines[index]));
+            }
+            catch {
+                continue;
+            }
+            if (marker?.['type'] !== 'custom' || marker['customType'] !== 'tool_execution_start')
+                continue;
+            const time = typeof marker['timestamp'] === 'string' ? Date.parse(marker['timestamp']) : NaN;
+            if (!Number.isFinite(time) || time < startedAt)
+                continue;
+            const data = asRecord(marker['data']);
+            if (typeof data?.['intent'] !== 'string')
+                continue;
+            const label = stripVTControlCharacters(data['intent'])
+                .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim();
+            if (label) {
+                const characters = Array.from(label);
+                return characters.length > 64 ? `${characters.slice(0, 61).join('')}...` : label;
+            }
+        }
+    }
+    catch {
+        // A missing, rotating, or unreadable transcript must not stop presence updates.
+    }
+    finally {
+        if (fd !== undefined)
+            closeSync(fd);
+    }
+    return undefined;
+}
 /**
  * paneKey → agent identity, for the panes Orca has a persisted row for.
  *
@@ -137,7 +190,10 @@ export function readAgentIdentities(options = {}) {
             if (!agent) {
                 continue;
             }
-            identities.set(paneKey, { agent, receivedAt: readRowReceivedAt(entry) });
+            const progress = agent === 'omp' ? readOmpProgress(entry) : undefined;
+            identities.set(paneKey, {
+                agent, receivedAt: readRowReceivedAt(entry), ...(progress ? { progress } : {})
+            });
         }
     }
     catch {

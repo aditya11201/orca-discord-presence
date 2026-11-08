@@ -10,9 +10,12 @@
  * survives the gap in plugin storage rather than in memory.
  */
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { DiscordPresenceClient } from './lib/discord-ipc.mjs';
-import { applyAgentIdentities, DEFAULT_HEADER, DEFAULT_LARGE_IMAGE, DEFAULT_PRIVACY, WORKING_LABEL_INTERVAL_MS, applyAgentStatus, applyWorktreeCreated, applyWorktreeRemoved, buildActivity, createPresenceState, deserializeState, describeActivity, describeWorkspaces, isPrivacyLevel, latestAgent, nextHeader, nextPrivacy, renderHeader, pruneStale, serializeState, summarize } from './lib/presence-model.mjs';
+import { applyAgentIdentities, DEFAULT_HEADER, DEFAULT_LARGE_IMAGE, DEFAULT_PRIVACY, applyAgentStatus, applyWorktreeCreated, applyWorktreeRemoved, buildActivity, createPresenceState, deserializeState, isPrivacyLevel, latestAgent, nextHeader, nextPrivacy, renderHeader, pruneStale, serializeState, summarize } from './lib/presence-model.mjs';
 import { describeAgent, readAgentIdentities, readAgentImages, resolveAgentImage } from './lib/agent-identity.mjs';
+const execFileAsync = promisify(execFile);
 const STORAGE_KEY = 'presence-state';
 const STORAGE_SESSION_KEY = 'session-since';
 /** Pre-session builds keyed the timer on the busy window; adopted once on load. */
@@ -55,14 +58,14 @@ export default function activate(orca) {
     // commands, so the cycle is what makes this usable from the palette alone.
     orca.commands.register('presence.header', (args) => runtime.setHeader(args));
     orca.commands.register('presence.logo', () => runtime.toggleDynamicLogo());
-    orca.events.on('worktree.created', (payload) => {
-        runtime.onEvent((state) => applyWorktreeCreated(state, payload));
+    orca.events.on('workspace.created', (payload) => {
+        runtime.onEvent((state) => applyWorktreeCreated(state, payload && { ...payload, worktreeId: payload.workspaceId }));
     });
-    orca.events.on('worktree.removed', (payload) => {
-        runtime.onEvent((state) => applyWorktreeRemoved(state, payload));
+    orca.events.on('workspace.removed', (payload) => {
+        runtime.onEvent((state) => applyWorktreeRemoved(state, payload && { ...payload, worktreeId: payload.workspaceId }));
     });
     orca.events.on('agent.status.changed', (payload) => {
-        runtime.onEvent((state) => applyAgentStatus(state, payload));
+        runtime.onEvent((state) => applyAgentStatus(state, payload && { ...payload, worktreeId: payload.workspaceId }));
         // The event carries no agent identity, so the join runs against the host's
         // persisted rows on every status change — the moment a new agent speaks up
         // is exactly when the logo has to move.
@@ -129,7 +132,7 @@ class PresenceRuntime {
             if (this.#settings.enabled && this.#settings.privacy !== 'off') {
                 this.#schedulePublish();
             }
-        }, WORKING_LABEL_INTERVAL_MS);
+        }, 15_000);
         this.#refreshTimer.unref?.();
     }
     async #bootstrap() {
@@ -150,7 +153,7 @@ class PresenceRuntime {
             return;
         }
         this.#sessionSince = Date.now();
-        if (this.#can('storage')) {
+        if (this.#can('storage:own')) {
             void this.#orca.host
                 .call('storage.set', { key: STORAGE_SESSION_KEY, value: this.#sessionSince })
                 .catch(() => { });
@@ -177,7 +180,7 @@ class PresenceRuntime {
         if (!this.#settings.dynamicAgentImage) {
             return undefined;
         }
-        const latest = latestAgent(this.#state);
+        const latest = latestAgent(this.#state, this.#settings.privacy === 'full' ? this.#focus : undefined);
         if (!latest) {
             return undefined;
         }
@@ -207,6 +210,7 @@ class PresenceRuntime {
                     largeImage: readOptionalString(stored['largeImage']),
                     largeText: readOptionalString(stored['largeText']),
                     smallImage: readOptionalString(stored['smallImage']),
+                    workingSmallImage: readOptionalString(stored['workingSmallImage']),
                     smallText: readOptionalString(stored['smallText'])
                 },
                 dynamicAgentImage: stored['dynamicAgentImage'] !== false,
@@ -230,7 +234,7 @@ class PresenceRuntime {
         }
     }
     async #loadState() {
-        if (!this.#can('storage')) {
+        if (!this.#can('storage:own')) {
             return;
         }
         try {
@@ -269,7 +273,7 @@ class PresenceRuntime {
         }
     }
     async #persistState() {
-        if (!this.#can('storage')) {
+        if (!this.#can('storage:own')) {
             return;
         }
         try {
@@ -296,11 +300,33 @@ class PresenceRuntime {
             this.#orca.log(`workspace context unavailable: ${describeError(error)}`);
             next = null;
         }
+        if (next?.terminals.some(({ id }) => id.startsWith('term_'))) {
+            try {
+                const command = process.env['ORCA_CLI_COMMAND'] ?? (process.platform === 'linux' ? 'orca-ide' : 'orca');
+                const { stdout } = await execFileAsync(command, ['terminal', 'list', '--json'], {
+                    timeout: 5_000, maxBuffer: 8 * 1024 * 1024
+                });
+                const rows = JSON.parse(stdout)?.result?.terminals;
+                if (Array.isArray(rows)) {
+                    const ids = new Set(next.terminals.map(({ id }) => id));
+                    const worktrees = new Set();
+                    for (const row of rows) {
+                        if (row && ids.has(row.handle) && typeof row.worktreeId === 'string' && row.worktreeId) {
+                            worktrees.add(row.worktreeId);
+                        }
+                    }
+                    if (worktrees.size === 1)
+                        next = { ...next, worktreeId: [...worktrees][0] };
+                }
+            }
+            catch {
+                this.#orca.log('Terminal identity lookup unavailable; using legacy workspace matching.');
+            }
+        }
         this.#focus = next;
-        // The identity join is cheap (one bounded file read) and the focus poll is
-        // the only heartbeat while the fleet is quiet, so it doubles as the sweep
-        // that catches an agent switching panes without a status event. It runs
-        // regardless of `dynamicAgentImage`: identities are state, not publication.
+        // The focus poll also refreshes agent identities and bounded OMP progress tails
+        // while the fleet is quiet, so switching panes updates both artwork and status.
+        // It runs regardless of `dynamicAgentImage`: identities are state, not publication.
         this.onEvent((state) => applyAgentIdentities(state, this.readIdentities()));
         // Orca still has no focus-change plugin event. Polling only helps if a
         // changed context triggers a publish; otherwise the new workspace sits in
@@ -486,7 +512,8 @@ class PresenceRuntime {
         await this.#saveSetting('dynamicAgentImage', this.#settings.dynamicAgentImage);
         this.#lastPayload = '';
         this.#schedulePublish();
-        const latest = this.#settings.dynamicAgentImage ? latestAgent(this.#state) : null;
+        const latest = this.#settings.dynamicAgentImage
+            ? latestAgent(this.#state, this.#settings.privacy === 'full' ? this.#focus : undefined) : null;
         await this.#notify('Discord Presence', this.#settings.dynamicAgentImage
             ? latest
                 ? `Logo follows the latest agent: ${describeAgent(latest.agent)}.`
@@ -523,15 +550,19 @@ class PresenceRuntime {
     }
     async reportStatus() {
         // The command is an explicit request for current truth; do not make the
-        // user wait for the next 30-second focus poll.
+        // user wait for the next 20-second focus poll.
         await this.#refreshFocus();
         const summary = summarize(this.#state);
         const header = this.#settings.header ?? DEFAULT_HEADER;
         const headerText = this.#renderHeader(header);
         const largeImage = this.#settings.assets.largeImage ?? DEFAULT_LARGE_IMAGE;
-        const smallImage = this.#settings.assets.smallImage ?? '';
+        const activity = buildActivity({
+            state: this.#state, focus: this.#focus, privacy: this.#settings.privacy,
+            assets: this.#settings.assets, elapsedMs: Date.now() - this.#sessionSince
+        });
+        const smallImage = activity?.assets?.small_image ?? '';
         const agentImage = this.#agentImage();
-        const latest = latestAgent(this.#state);
+        const latest = latestAgent(this.#state, this.#settings.privacy === 'full' ? this.#focus : undefined);
         const publishedImage = agentImage?.key || largeImage;
         const connection = this.#client?.connected
             ? `connected (${this.#client.socketPath})`
@@ -542,7 +573,7 @@ class PresenceRuntime {
             `${this.#settings.enabled ? 'Enabled' : 'Disabled'} · privacy: ${this.#settings.privacy}`,
             [
                 headerText,
-                describeActivity(summary, this.#visibleWorkspaces(summary), Date.now() - this.#sessionSince)
+                activity?.state
             ]
                 .filter(Boolean)
                 .join(' · '),
@@ -577,10 +608,6 @@ class PresenceRuntime {
             state: this.#state,
             privacy: this.#settings.privacy
         });
-    }
-    /** Workspace names only leak into the status line at `full` privacy. */
-    #visibleWorkspaces(summary) {
-        return this.#settings.privacy === 'full' ? describeWorkspaces(this.#state, summary) : [];
     }
     async #clearPresence() {
         this.#lastPayload = '';

@@ -11,6 +11,7 @@
  * for this plugin's own storage round-trip, and one validation path is simpler
  * to reason about than two.
  */
+import { type AgentIdentity } from './agent-identity.mjs';
 import type { DiscordActivity } from './discord-ipc.mjs';
 import type { AgentStatusState, WorkspaceContext } from './orca-api.mjs';
 /** Orca's agent states, from `AGENT_STATUS_STATES` in the host. */
@@ -23,7 +24,7 @@ export type PrivacyLevel = (typeof PRIVACY_LEVELS)[number];
  * was enabled would be a bad default even though it is the more interesting one.
  */
 export declare const DEFAULT_PRIVACY: PrivacyLevel;
-export declare const WORKING_LABEL_INTERVAL_MS = 30000;
+export declare const WORKING_LABEL_INTERVAL_MS = 15000;
 /**
  * Leading segment of the details line — the closest thing to a card "header"
  * this plugin controls. Discord renders the application's own name above it and
@@ -69,6 +70,7 @@ export type PaneRecord = {
     state: AgentStatusState;
     receivedAt: number;
     agent?: string;
+    progress?: string | undefined;
 };
 export type PresenceState = {
     worktrees: Map<string, WorktreeRecord>;
@@ -100,10 +102,7 @@ export declare function applyAgentStatus(state: PresenceState, payload: unknown)
  * Identities for unknown panes are ignored: adopting them would inflate the
  * fleet counts with panes Orca never projected to this plugin.
  */
-export declare function applyAgentIdentities(state: PresenceState, identities: ReadonlyMap<string, {
-    agent: string;
-    receivedAt: number;
-}>): PresenceState;
+export declare function applyAgentIdentities(state: PresenceState, identities: ReadonlyMap<string, AgentIdentity>): PresenceState;
 export declare function pruneStale(state: PresenceState, now: number): PresenceState;
 /** Storage holds JSON, so Maps round-trip through plain objects. */
 export declare function serializeState(state: PresenceState): {
@@ -112,14 +111,13 @@ export declare function serializeState(state: PresenceState): {
 };
 export declare function deserializeState(raw: unknown): PresenceState;
 /**
- * The pane whose agent ran most recently, among the panes Orca has given an
- * identity to. This is what drives the dynamic logo: finish prompting in OMP,
- * start a session in OpenCode, and the logo follows OpenCode.
+ * Most recent identified agent, scoped to the focused workspace when provided.
+ * Terminal ids identify the workspace first; a unique branch is the fallback.
  *
  * Ties and zero timestamps resolve by pane key so the choice is deterministic
  * across worker restarts — an unstable payload would republish for nothing.
  */
-export declare function latestAgent(state: PresenceState): LatestAgent | null;
+export declare function latestAgent(state: PresenceState, focus?: WorkspaceContext): LatestAgent | null;
 export declare function summarize(state: PresenceState): PresenceSummary;
 /**
  * Names of the workspaces (worktrees) that currently have a working agent.
@@ -154,9 +152,9 @@ export type HeaderContext = {
 };
 /**
  * Expands a header template. `{workspace}` and `{branch}` resolve only at
- * `full`; at `minimal` they blank out, and a template left with nothing but
- * blanks falls back to AI Agent. `{agent}` uses the same latest pane as the logo,
- * including at `minimal` privacy and when agent artwork is disabled.
+ * `full`; at `minimal` they blank out. Templates rendered blank fall back to AI Agent,
+ * except the default header shows Idle when no agents are running. `{agent}`
+ * uses the same latest pane as the logo, regardless of artwork settings.
  *
  * Segments are split on `·` so that a token dropping out takes its separator
  * with it, so `{workspace} · {branch}` never reads as `· `.
@@ -174,6 +172,7 @@ export type PresenceAssets = {
      *  hosts no artwork under any other key, so a default would render blank. */
     smallImage?: string | undefined;
     smallText?: string | undefined;
+    workingSmallImage?: string | undefined;
 };
 export type BuildActivityInput = {
     state: PresenceState;
@@ -203,12 +202,11 @@ export type BuildActivityInput = {
  *
  * The card reads top to bottom as:
  *
- *   OpenCode 2 · my-app · feat/ipc        ← details: agent, workspace, branch
+ *   OpenCode 2 - my app                  ← details: agent and focused workspace
  *   Vibing · 2 agents working · in my-app ← state: working label and fleet
  *
- * `startedAt` drives Discord's elapsed timer; it is the moment the fleet last
- * went from idle to busy, not process start, so the timer reads as "how long
- * this batch of work has been running".
+ * `startedAt` is supplied by the runtime and stays unchanged across workspace
+ * switches. Public details are limited to 64 characters, including "...".
  */
 export declare function buildActivity({ state, focus, privacy, startedAt, elapsedMs, header, assets, agentImage, partyId }: BuildActivityInput): DiscordActivity | null;
 export declare function isPrivacyLevel(value: unknown): value is PrivacyLevel;

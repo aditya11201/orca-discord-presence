@@ -174,10 +174,12 @@ test('working labels rotate at clock boundaries and stop when not working', () =
   for (const [elapsedMs, label] of [
     [-1, 'Vibing'],
     [0, 'Vibing'],
-    [29_999, 'Vibing'],
-    [30_000, 'Just vibing'],
-    [60_000, 'In the flow'],
-    [90_000, 'Vibing']
+    [14_999, 'Vibing'],
+    [15_000, 'Just vibing'],
+    [45_000, 'Catastrophizing'],
+    [60_000, 'Overthinking'],
+    [37 * 15_000, 'Pacing'],
+    [38 * 15_000, 'Vibing']
   ]) {
     assert.equal(
       buildActivity({ ...input, elapsedMs }).state,
@@ -270,31 +272,6 @@ test('minimal privacy publishes no project or branch name', () => {
   assert.match(activity.state, /1 agent working$/)
 })
 
-test('full privacy publishes header, project and branch', () => {
-  const state = createPresenceState()
-  applyAgentStatus(state, { paneKey: 'a', worktreeId: 'w1', state: 'working', receivedAt: 1 })
-  const activity = buildActivity({
-    state,
-    focus: { displayName: 'checkout-service', branch: 'main' },
-    privacy: 'full',
-    header: 'Fleet',
-    startedAt: 1000
-  })
-  assert.equal(activity.details, 'Fleet · checkout-service · main')
-  assert.equal(activity.timestamps.start, 1000)
-})
-
-test('a project matching the header is not repeated', () => {
-  const state = createPresenceState()
-  const activity = buildActivity({
-    state,
-    focus: { displayName: 'orca', branch: 'main' },
-    privacy: 'full',
-    header: 'Orca',
-    startedAt: 0
-  })
-  assert.equal(activity.details, 'Orca · main')
-})
 
 test('header tokens resolve at full privacy', () => {
   const state = createPresenceState()
@@ -328,6 +305,16 @@ test('header tokens blank out at minimal, taking their separators with them', ()
   assert.ok(!encoded.includes('acme'), encoded)
 })
 
+test('default agent header shows Idle when no agents are running', () => {
+  const state = createPresenceState()
+  const input = { state, focus: null, privacy: 'minimal' }
+  assert.equal(buildActivity(input).details, 'Idle')
+  assert.equal(buildActivity(input).state, 'No agents running')
+
+  applyAgentStatus(state, agentStatus('pane', 'working', 100))
+  assert.equal(buildActivity(input).details, 'AI Agent')
+})
+
 test('agent-only headers follow the latest pane without depending on artwork', () => {
   const state = createPresenceState()
   const input = {
@@ -358,16 +345,6 @@ test('agent-only headers follow the latest pane without depending on artwork', (
   assert.equal(buildActivity(input).details, 'Oh My Pi (OMP)')
 })
 
-test('a token header does not repeat the project it already names', () => {
-  const state = createPresenceState()
-  const activity = buildActivity({
-    state,
-    focus: { displayName: 'checkout-service', branch: 'feat/ipc' },
-    privacy: 'full',
-    header: '{workspace}'
-  })
-  assert.equal(activity.details, 'checkout-service · feat/ipc')
-})
 
 test('an empty header stays empty rather than falling back', () => {
   const state = createPresenceState()
@@ -398,14 +375,6 @@ test('the header is configurable and can be turned off with a blank string', () 
   const off = buildActivity({ state, focus: null, privacy: 'minimal', header: '' })
   assert.equal(off.details, undefined)
   assert.match(off.state, /1 agent working$/)
-
-  const withProject = buildActivity({
-    state,
-    focus: { displayName: 'app', branch: 'main' },
-    privacy: 'full',
-    header: ''
-  })
-  assert.equal(withProject.details, 'app · main')
 })
 
 test('the Orca logo is published without any configuration', () => {
@@ -442,12 +411,6 @@ test('full privacy names the workspaces the agents are working in', () => {
   applyAgentStatus(state, { paneKey: 'b', worktreeId: 'w2', state: 'working', receivedAt: 1 })
 
   assert.deepEqual(describeWorkspaces(state), ['api', 'web'])
-  const activity = buildActivity({
-    state,
-    focus: { displayName: 'api', branch: 'main' },
-    privacy: 'full'
-  })
-  assert.match(activity.state, / · in api, web$/)
 })
 
 test('a worktree without a path falls back to its branch as a name', () => {
@@ -457,24 +420,7 @@ test('a worktree without a path falls back to its branch as a name', () => {
   assert.deepEqual(describeWorkspaces(state), ['feat/ipc'])
 })
 
-test('an unnamed worktree degrades to the worktree count', () => {
-  // No `worktree.created` was seen for these, so only their ids are known.
-  const state = createPresenceState()
-  applyAgentStatus(state, { paneKey: 'a', worktreeId: 'w1', state: 'working', receivedAt: 1 })
-  applyAgentStatus(state, { paneKey: 'b', worktreeId: 'w2', state: 'working', receivedAt: 1 })
-  const activity = buildActivity({ state, focus: null, privacy: 'full' })
-  assert.match(activity.state, / · across 2 worktrees$/)
-})
 
-test('a long workspace list collapses into a remainder count', () => {
-  const state = createPresenceState()
-  for (const name of ['api', 'web', 'infra', 'docs', 'cli']) {
-    applyWorktreeCreated(state, { worktreeId: name, path: `/repos/${name}`, branch: 'main' })
-    applyAgentStatus(state, { paneKey: name, worktreeId: name, state: 'working', receivedAt: 1 })
-  }
-  const activity = buildActivity({ state, focus: null, privacy: 'full' })
-  assert.match(activity.state, / · in api, cli, docs \+2$/)
-})
 
 test('minimal privacy keeps workspace names out of the status line', () => {
   const state = createPresenceState()
@@ -626,4 +572,116 @@ test('the dynamic logo survives a privacy drop to off', () => {
     }),
     null
   )
+})
+
+test('focused workspace selects its own agent and bounds public details across switches', () => {
+  const state = createPresenceState()
+  state.panes.set('terminal-a:pane-a', {
+    worktreeId: 'a', state: 'working', receivedAt: 100, agent: 'opencode2'
+  })
+  state.panes.set('terminal-b:pane-b', {
+    worktreeId: 'b', state: 'working', receivedAt: 200, agent: 'omp'
+  })
+  const input = { state, privacy: 'full', startedAt: 123456 }
+  const first = buildActivity({
+    ...input,
+    focus: { displayName: '/repos/Tracing-log-di-production', branch: 'refs/heads/private', terminals: [{ id: 'terminal-a' }] }
+  })
+  assert.equal(first.details, 'OpenCode 2 - Tracing log di production')
+  assert.equal(first.timestamps.start, 123456)
+  const second = buildActivity({
+    ...input,
+    focus: { displayName: 'Fix '.repeat(40), branch: 'refs/heads/secret', terminals: [{ id: 'terminal-b' }] }
+  })
+  assert.match(second.details, /^Oh My Pi \(OMP\) - Fix /)
+  assert.ok(second.details.endsWith('...'))
+  assert.ok(Array.from(second.details).length <= 64)
+  assert.doesNotMatch(second.details, /refs\/heads|secret|\/repos/)
+  assert.equal(second.timestamps.start, first.timestamps.start)
+  const unknown = buildActivity({
+    ...input,
+    focus: { displayName: 'Unobserved workspace', branch: '', terminals: [] }
+  })
+  assert.equal(unknown.details, 'AI Agent - Unobserved workspace')
+  const masked = buildActivity({
+    ...input, privacy: 'minimal',
+    focus: { displayName: 'Private workspace', branch: 'secret', terminals: [{ id: 'terminal-a' }] }
+  })
+  assert.equal(masked.details, 'Oh My Pi (OMP)')
+})
+
+test('working badge follows the displayed agent without replacing its large image', () => {
+  const state = createPresenceState()
+  const selected = { worktreeId: 'a', state: 'working', receivedAt: 1, agent: 'omp' }
+  state.panes.set('a:one', selected)
+  state.panes.set('b:two', { worktreeId: 'b', state: 'working', receivedAt: 2, agent: 'opencode2' })
+  const input = {
+    state, privacy: 'full',
+    focus: { displayName: 'workspace-a', branch: '', terminals: [{ id: 'a' }] },
+    agentImage: { key: 'omp-art', text: 'OMP' },
+    assets: { workingSmallImage: 'https://example.com/thinking.gif' }
+  }
+  const working = buildActivity(input)
+  assert.equal(working.assets.large_image, 'omp-art')
+  assert.equal(working.assets.small_image, input.assets.workingSmallImage)
+  for (const status of ['done', 'waiting', 'blocked']) {
+    selected.state = status
+    const quiet = buildActivity(input)
+    assert.equal(quiet.assets.large_image, 'omp-art')
+    assert.equal(quiet.assets.small_image, undefined)
+  }
+  assert.equal(buildActivity({ ...input, assets: { ...input.assets, smallImage: 'idle-art' } }).assets.small_image, 'idle-art')
+  selected.state = 'working'
+  assert.equal(buildActivity(input).assets.small_image, input.assets.workingSmallImage)
+  assert.equal(buildActivity({ ...input, assets: { ...input.assets, largeImage: '' } }).assets, undefined)
+})
+
+test('progress follows the selected working pane and clears on refresh or session completion', () => {
+  const state = createPresenceState()
+  state.panes.set('a:one', { worktreeId: 'a', state: 'working', receivedAt: 100, agent: 'omp' })
+  state.panes.set('b:two', { worktreeId: 'b', state: 'working', receivedAt: 200, agent: 'omp' })
+  const identities = new Map([
+    ['a:one', { agent: 'omp', receivedAt: 100, progress: 'Checking ep GKE deployment state' }],
+    ['b:two', { agent: 'omp', receivedAt: 200, progress: 'OTHER WORKSPACE' }]
+  ])
+  const input = {
+    state, privacy: 'full', startedAt: 12345,
+    focus: { displayName: 'Production', branch: '', terminals: [{ id: 'a' }] }
+  }
+  applyAgentIdentities(state, identities)
+  const activity = buildActivity(input)
+  assert.match(activity.state, / · Checking ep GKE deployment state$/)
+  assert.doesNotMatch(activity.state, /OTHER WORKSPACE/)
+  assert.doesNotMatch(buildActivity({ ...input, privacy: 'minimal' }).state, /Checking|OTHER WORKSPACE/)
+  identities.set('a:one', { agent: 'omp', receivedAt: 100, progress: 'Verifying deployment' })
+  applyAgentIdentities(state, identities)
+  assert.match(buildActivity(input).state, / · Verifying deployment$/)
+  assert.equal(buildActivity(input).timestamps.start, 12345)
+  for (const prefix of ['', 'A']) {
+    identities.set('a:one', { agent: 'omp', receivedAt: 100, progress: prefix + '🚀'.repeat(80) })
+    applyAgentIdentities(state, identities)
+    const bounded = buildActivity(input).state
+    assert.ok(bounded.length <= 128)
+    assert.ok(bounded.isWellFormed())
+  }
+  identities.set('a:one', { agent: 'omp', receivedAt: 100 })
+  applyAgentIdentities(state, identities)
+  assert.doesNotMatch(buildActivity(input).state, /Checking|Verifying/)
+  applyAgentIdentities(state, new Map([['a:one', { agent: 'omp', receivedAt: 100, progress: 'Verifying deployment' }]]))
+  applyAgentStatus(state, { paneKey: 'a:one', worktreeId: 'a', state: 'done', receivedAt: 300 })
+  assert.doesNotMatch(buildActivity(input).state, /Verifying/)
+})
+
+test('stable workspace identity survives renamed labels and changed branches without selecting another agent', () => {
+  const state = createPresenceState()
+  state.worktrees.set('a', { path: '/repos/tautog', branch: 'refs/heads/tautog' })
+  state.panes.set('tab:leaf', { worktreeId: 'a', state: 'working', agent: 'omp', receivedAt: 100 })
+  state.panes.set('other:leaf', { worktreeId: 'b', state: 'working', agent: 'opencode2', receivedAt: 200 })
+  for (const displayName of ['tautog', 'troubleshoot last error upsize & downsize']) {
+    const focus = { worktreeId: 'a', displayName, branch: 'refs/heads/main', terminals: [{ id: 'term_opaque' }] }
+    assert.equal(latestAgent(state, focus)?.agent, 'omp')
+    assert.match(buildActivity({ state, focus, privacy: 'full', startedAt: 123 }).details, /^Oh My Pi \(OMP\) - /)
+    assert.equal(buildActivity({ state, focus, privacy: 'full', startedAt: 123 }).timestamps.start, 123)
+    assert.equal(latestAgent(state, { ...focus, worktreeId: 'unknown' }), null)
+  }
 })

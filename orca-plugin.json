@@ -1,46 +1,46 @@
 {
-  "manifestVersion": 1,
+  "manifestVersion": 2,
+  "execution": "trusted-worker",
   "id": "discord-presence",
-  "publisher": "lutica-canard",
   "name": "Discord Presence",
   "version": "0.2.0",
   "description": "Publishes what your Orca agent fleet is doing to your Discord status via local Rich Presence IPC.",
-  "author": { "name": "Lutica_CANARD" },
-  "repository": "https://github.com/LuticaCANARD/orca-discord-presence",
-  "engines": { "orca": ">=1.4.0" },
+  "author": { "name": "aditya11201", "url": "https://github.com/aditya11201" },
+  "repository": "https://github.com/aditya11201/orca-discord-presence",
+  "engines": { "orca": ">=1.4.246" },
   "pluginApi": 1,
   "main": "dist/main.mjs",
   "contributes": {
     "commands": [
-      { "id": "presence.toggle", "title": "Discord Presence: Toggle", "context": "global" },
+      { "id": "presence.toggle", "title": "Discord Presence: Toggle", "when": "global" },
       {
         "id": "presence.privacy",
         "title": "Discord Presence: Cycle Privacy Level",
-        "context": "global"
+        "when": "global"
       },
-      { "id": "presence.header", "title": "Discord Presence: Set Header", "context": "global" },
+      { "id": "presence.header", "title": "Discord Presence: Set Header", "when": "global" },
       {
         "id": "presence.logo",
         "title": "Discord Presence: Toggle Agent Logo",
-        "context": "global"
+        "when": "global"
       },
-      { "id": "presence.reconnect", "title": "Discord Presence: Reconnect", "context": "global" },
+      { "id": "presence.reconnect", "title": "Discord Presence: Reconnect", "when": "global" },
       {
         "id": "presence.status",
         "title": "Discord Presence: Show Connection Status",
-        "context": "global"
+        "when": "global"
       }
     ],
     "events": [
-      { "on": "worktree.created" },
-      { "on": "worktree.removed" },
+      { "on": "workspace.created" },
+      { "on": "workspace.removed" },
       { "on": "agent.status.changed" }
     ]
   },
   "capabilities": [
     { "kind": "workspace:read" },
-    { "kind": "events:subscribe" },
-    { "kind": "storage" },
+    { "kind": "agent:read" },
+    { "kind": "storage:own" },
     { "kind": "settings:own" },
     { "kind": "notifications:show" }
   ]

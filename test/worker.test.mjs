@@ -34,8 +34,8 @@ function createFakeOrca({
   const orca = {
     grantedCapabilities: capabilities ?? [
       'workspace:read',
-      'events:subscribe',
-      'storage',
+      'agent:read',
+      'storage:own',
       'settings:own',
       'notifications:show'
     ],
@@ -112,17 +112,29 @@ test('activate registers the manifest commands and event handlers', async () => 
   await deactivate()
 })
 
+test('v2 workspace events track and remove running agents', async () => {
+  const fake = createFakeOrca()
+  await activate(fake.orca)
+  await settle()
+  await fake.emit('workspace.created', { workspaceId: 'w1', kind: 'worktree', path: '/repos/app', branch: 'main' })
+  await fake.emit('agent.status.changed', { workspaceId: 'w1', paneKey: 'p1', state: 'working', receivedAt: Date.now() })
+  assert.equal((await fake.invoke('presence.status')).summary.activeWorktrees, 1)
+  await fake.emit('workspace.removed', { workspaceId: 'w1', kind: 'worktree', path: '/repos/app' })
+  assert.equal((await fake.invoke('presence.status')).summary.panes, 0)
+  await deactivate()
+})
+
 test('survives with Discord absent', async () => {
   const fake = createFakeOrca()
   await activate(fake.orca)
   await settle()
-  await fake.emit('worktree.created', {
-    worktreeId: 'w1',
+  await fake.emit('workspace.created', {
+    workspaceId: 'w1',
     path: '/repos/app',
     branch: 'feat/presence'
   })
   await fake.emit('agent.status.changed', {
-    worktreeId: 'w1',
+    workspaceId: 'w1',
     paneKey: 'p1',
     state: 'working',
     receivedAt: Date.now()
@@ -249,7 +261,7 @@ test('agent state is persisted so a reaped worker can rehydrate', async () => {
   await activate(first.orca)
   await settle()
   await first.emit('agent.status.changed', {
-    worktreeId: 'w1',
+    workspaceId: 'w1',
     paneKey: 'p1',
     state: 'blocked',
     receivedAt: Date.now()
@@ -283,7 +295,7 @@ test('the elapsed timer counts the session, not each stretch of work', async () 
   // finishing changes the status line, never how long Orca has been open.
   for (const state of ['working', 'done', 'working']) {
     await fake.emit('agent.status.changed', {
-      worktreeId: 'w1',
+      workspaceId: 'w1',
       paneKey: 'p1',
       state,
       receivedAt: Date.now()
@@ -356,7 +368,7 @@ test('reconnect reports the connection state instead of throwing', async () => {
   await activate(fake.orca)
   await settle()
   await fake.emit('agent.status.changed', {
-    worktreeId: 'w1',
+    workspaceId: 'w1',
     paneKey: 'p1',
     state: 'working',
     receivedAt: Date.now()
@@ -405,11 +417,11 @@ test('stored settings are honoured on activate', async () => {
 })
 
 test('a narrowed capability grant skips every host call it cannot make', async () => {
-  const fake = createFakeOrca({ capabilities: ['events:subscribe'] })
+  const fake = createFakeOrca({ capabilities: ['agent:read'] })
   await activate(fake.orca)
   await settle()
   await fake.emit('agent.status.changed', {
-    worktreeId: 'w1',
+    workspaceId: 'w1',
     paneKey: 'p1',
     state: 'working',
     receivedAt: Date.now()
@@ -436,8 +448,8 @@ test('malformed events do not take the worker down', async () => {
   await activate(fake.orca)
   await settle()
   await fake.emit('agent.status.changed', null)
-  await fake.emit('worktree.created', { worktreeId: '' })
-  await fake.emit('worktree.removed', undefined)
+  await fake.emit('workspace.created', { workspaceId: '' })
+  await fake.emit('workspace.removed', undefined)
   await settle()
   const status = await fake.invoke('presence.status')
   assert.equal(status.summary.panes, 0)
@@ -461,7 +473,7 @@ test('a pinned logo still learns which agent each pane runs', async () => {
   await activate(fake.orca)
   await settle()
   await fake.emit('agent.status.changed', {
-    worktreeId: 'w1',
+    workspaceId: 'w1',
     paneKey: 'p1',
     state: 'working',
     receivedAt: Date.now()

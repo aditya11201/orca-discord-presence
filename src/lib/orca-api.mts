@@ -20,27 +20,28 @@ export type PluginCapabilityKind =
   | 'workspace:read'
   | 'terminal:send'
   | 'notifications:show'
-  | 'storage'
-  | 'secrets'
-  | 'events:subscribe'
+  | 'storage:own'
+  | 'agent:read'
   | 'settings:own'
 
 /** `AGENT_STATUS_STATES`. */
 export type AgentStatusState = 'working' | 'blocked' | 'waiting' | 'done'
 
 export type WorktreeCreatedPayload = {
-  worktreeId: string
+  workspaceId: string
+  kind: 'worktree' | 'folder'
   path: string
   branch: string
 }
 
 export type WorktreeRemovedPayload = {
-  worktreeId: string
+  workspaceId: string
+  kind: 'worktree' | 'folder'
   path: string
 }
 
 export type AgentStatusChangedPayload = {
-  worktreeId: string | null
+  workspaceId: string | null
   paneKey: string
   state: AgentStatusState
   receivedAt: number
@@ -48,8 +49,8 @@ export type AgentStatusChangedPayload = {
 
 /** `PLUGIN_EVENT_NAMES` — a closed set in v0. */
 export type PluginEventMap = {
-  'worktree.created': WorktreeCreatedPayload
-  'worktree.removed': WorktreeRemovedPayload
+  'workspace.created': WorktreeCreatedPayload
+  'workspace.removed': WorktreeRemovedPayload
   'agent.status.changed': AgentStatusChangedPayload
 }
 
@@ -63,6 +64,8 @@ export type WorkspaceContext = {
   branch: string
   displayName: string
   terminals: Array<{ id: string }>
+  /** Enriched locally from Orca's terminal list, not the plugin host projection. */
+  worktreeId?: string
 } | null
 
 /** JSON is all that crosses the storage and settings boundary. */

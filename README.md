@@ -2,13 +2,17 @@
 
 Publishes your [Orca](https://github.com/stablyai/orca) agent fleet's activity to Discord, with the latest agent's name and artwork.
 
+Maintained by [aditya11201](https://github.com/aditya11201), based on
+[Lutica_CANARD's Orca Discord Presence](https://github.com/LuticaCANARD/orca-discord-presence).
+The original copyright notice and MIT license remain in [LICENSE](LICENSE).
+
 ```text
 ┌──────┐  OpenCode 2                                       ← minimal (default)
-│ logo │  Vibing · 2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
+│ logo │  Vibing · 2 agents from 2 worktrees · 1 blocked   (3 of 5)
 └──────┘  00:14 elapsed
 
-┌──────┐  OpenCode 2 · checkout-service · feat/ipc           ← full
-│ logo │  Vibing · 2 agents working · 1 blocked · in checkout-service, web   (3 of 5)
+┌──────┐  OpenCode 2 - checkout service                    ← full
+│ logo │  Vibing · 2 agents from 2 worktrees · 1 blocked   (3 of 5)
 └──────┘  00:14 elapsed
 ```
 
@@ -20,20 +24,20 @@ TypeScript, no runtime dependencies — the Discord Rich Presence IPC protocol i
 
 ## Requirements
 
-- Orca `>= 1.4.0` with the plugin system enabled (Settings → Plugins) — last verified against Orca `1.4.192`, see [Compatibility](#compatibility)
+- Orca `>= 1.4.246` for this manifest-v2 development version
 - The Discord **desktop** app running on the same machine (the web client exposes no local IPC socket)
 
 The default Discord application is **Orca ADE** (`1560068042283687946`). The plugin starts publishing as soon as an agent does something.
 
 ## Install
 
-Settings → Plugins → *Add marketplace*, paste the URL, and accept the consent dialog:
+The repository's existing tag is a legacy release, not the manifest-v2 development version:
 
 ```text
-https://github.com/LuticaCANARD/orca-discord-presence.git#v0.2.0
+https://github.com/aditya11201/orca-discord-presence.git#v0.2.0
 ```
 
-The `#v0.2.0` matters: without it Orca reads the index off `main`, which moves. The dialog lists the [capabilities](#capabilities-requested) below. To hack on the plugin instead, see [Development](#development).
+This upstream tag predates the local manifest-v2 migration; the migrated version has not yet been released.
 
 ## Privacy
 
@@ -41,13 +45,13 @@ The `#v0.2.0` matters: without it Orca reads the index off `main`, which moves. 
 
 | Level | Published |
 | --- | --- |
-| `full` | Header, focused workspace, branch, agent counts, and the workspaces agents are working in |
+| `full` | Agent and focused workspace (up to 64 characters), agent counts, and the workspaces agents are working in. Branches appear only when explicitly requested in a header template. |
 | `minimal` *(default)* | Header and agent counts. Busy worktrees are counted, never named; `{workspace}` and `{branch}` in the header blank out |
 | `off` | Nothing; the status is cleared |
 
 Cycle levels with the **Cycle Privacy Level** command. The `minimal` masking is not a convention — tests assert that no project, branch, or workspace name reaches the payload at that level.
 
-Workspace names come from the worktree's directory name, falling back to its branch. Only worktrees Orca announced while the plugin was running can be named, so a `full` status degrades to `across 2 worktrees` rather than going blank, and long lists collapse to `in api, cli, docs +2`.
+When multiple worktrees have working agents, the fleet reads `3 agents from 3 worktrees` instead of listing workspace names. A single named worktree can still appear at `full` privacy.
 
 ## Commands
 
@@ -83,24 +87,51 @@ The **Set Header** command is the way in that does not involve a text editor:
 
   `{agent}` → `{workspace}` → `{workspace} · {branch}` → *hidden* → `{agent}` → …
 
-`{workspace}` and `{branch}` resolve only at `full` privacy. At `minimal`, they blank out and take their separators with them. A template left with no visible text reads `AI Agent`.
+`{workspace}` and `{branch}` resolve only at `full` privacy. At `minimal`, they blank out and take their separators with them. A template left with no visible text reads `AI Agent`, except the default `{agent}` header reads `Idle` when no agents are running.
 
 `{agent}` shows the latest agent's display name, such as `OpenCode 2` or
 `Oh My Pi (OMP)`. It follows the same pane as the dynamic logo and remains
 available at `minimal` privacy or with artwork disabled. The default header
-contains only the agent name, or `AI Agent` when no identity is known.
+shows `Idle` when no agents are running, or `AI Agent` when an agent's identity is unknown.
 Custom headers are preserved; include `{agent}` to make them agent-aware.
+
+At `full`, the default details read `OpenCode 2 - Tracing log di production`.
+Directory paths and branch refs are not appended. Workspace-name hyphens and
+underscores become spaces; long details end in `...` within 64 characters.
+The workspace reported by Orca is checked every **15 seconds**, plus publish
+debouncing. Switching workspaces does not reset the elapsed timer.
+The agent name and artwork use the latest identified pane in that workspace.
+Opaque `term_` handles are resolved through `orca terminal list --json` to a
+stable `worktreeId`, so display-name edits and branch switches do not break matching.
+The installed Orca CLI must be available on the worker's PATH. Lookups have a
+five-second timeout; if unavailable, matching falls back to legacy terminal ids
+and a unique branch. Unknown or ambiguous workspaces show `AI Agent` and the
+fallback logo rather than another workspace's agent.
+At `minimal`, agent selection remains global and workspace names stay hidden.
 
 ### Working indicator
 
-While at least one agent is `working`, the status cycles through `Vibing`,
-`Just vibing`, and `In the flow`, followed by the real fleet counts. It reuses
-the 30-second refresh poll, so a change may lag a phase boundary by one poll.
+While at least one agent is `working`, the status cycles through working labels,
+including `Vibing`, `Overthinking`, and `Hoping it compiles`, followed by the real
+fleet counts. Labels advance in 15-second phases; the plugin refreshes every 15
+seconds, so the visible change can lag by one refresh.
 When no agent is working, the status shows the actual waiting, blocked, or idle
 summary instead.
 
 These are display-only labels, not agent thoughts or a task transcript. Prompt
 text, reasoning, assistant messages, and tool output are not sent to Discord.
+
+At `full` privacy, a working OMP agent can append its real tool intent instead
+of the `in workspace` suffix: `Just vibing · 1 agent working · Checking ep GKE deployment state`.
+This requires no OMP extension or configuration change. The plugin follows
+`providerSession.transcriptPath` from Orca and reads only the `data.intent`
+label of a current-turn `tool_execution_start` marker in the existing JSONL.
+Only the last 128 KiB is inspected; missing, incomplete, or unreadable markers
+fall back to the normal status. Labels are sanitized and limited to 64 characters.
+The 20-second poll and existing agent events refresh them. Old-turn labels are
+rejected, and a completed agent or session switch clears the previous label.
+`minimal` privacy never publishes progress. Intent labels can contain task or
+environment names, so use `minimal` if those should not be public.
 
 ### The logo and the badge
 
@@ -127,13 +158,13 @@ A Rich Presence application id is a public identifier — it travels in every cl
 
 ### The settings file
 
-Orca has no UI for per-plugin settings yet, so anything the commands do not cover is written by hand:
+Settings not covered by commands can be edited in the plugin's settings file. The plugin key depends on its installation source (`local.discord-presence` for a local folder, or `<repository-owner>.discord-presence` for a Git install):
 
 | Platform | Path |
 | --- | --- |
-| Linux | `~/.config/Orca/plugins-data/lutica-canard.discord-presence/settings.json` |
-| macOS | `~/Library/Application Support/Orca/plugins-data/lutica-canard.discord-presence/settings.json` |
-| Windows | `%APPDATA%\Orca\plugins-data\lutica-canard.discord-presence\settings.json` |
+| Linux | `~/.config/Orca/plugins-data/<plugin-key>/settings.json` |
+| macOS | `~/Library/Application Support/Orca/plugins-data/<plugin-key>/settings.json` |
+| Windows | `%APPDATA%\Orca\plugins-data\<plugin-key>\settings.json` |
 
 ```json
 {
@@ -159,19 +190,26 @@ Orca has no UI for per-plugin settings yet, so anything the commands do not cove
 | `dynamicAgentImage` | `true` | Follow the latest agent's logo instead of the pinned one |
 | `agentImages` | `{}` | Per-agent artwork: asset key or `https://` image URL |
 | `agentStateDir` | *(resolved)* | Directory holding the host's `agent-hooks/` rows |
-| `smallImage` | `""` *(off)* | Art asset key for the badge in the logo's corner |
+| `smallImage` | `""` *(off)* | Asset key or HTTPS image URL for the static corner badge |
+| `workingSmallImage` | `""` *(off)* | Badge shown only while the displayed agent is `working`; falls back to `smallImage` otherwise |
 | `smallText` | `""` | Tooltip when hovering the badge |
 
 Every key is optional, and `""` means *off* rather than *default*. Restart Orca, or disable and re-enable the plugin, to pick the file up.
 
+For an animated working badge, set `workingSmallImage` to a direct HTTPS GIF
+or animated WebP URL. The large agent artwork is unchanged. At `full` privacy,
+the badge follows the selected agent in the focused workspace, not other busy
+workspaces. Waiting, blocked, and done agents use the static badge or no badge.
+Discord plays the animation; the plugin does not send individual frames.
+
 ## The logo follows the agent
 
-The plugin selects the logo from the most recent agent status update, per pane
-rather than per worktree, and uses the agent's name as the hover text:
+The plugin selects artwork from the most recent agent status update within the
+focused workspace at `full`, or globally at `minimal`, and uses its name as hover text:
 
 ```text
 ┌──────────┐  Oh My Pi (OMP)
-│  OMP     │  Vibing · 2 agents working · 1 blocked · across 2 worktrees   (3 of 5)
+│  OMP     │  Vibing · 2 agents from 2 worktrees · 1 blocked   (3 of 5)
 └──────────┘  00:14 elapsed
 ```
 
@@ -193,15 +231,15 @@ tell a plugin which agent is speaking. The host does persist it: every hook
 event writes a row to `<userData>/agent-hooks/last-status.json`, keyed by pane
 key, carrying the agent id in `payload.agentType` (with `agentPresence.agent`
 and `source` as fallbacks). The plugin reads that file on each status change and
-on the 30-second focus poll, and joins what it finds onto the panes it already
+on the 20-second focus poll, and joins what it finds onto the panes it already
 knows.
 
 That file is a host implementation detail, not a contract, so the read is
 defensive: absent, unreadable, oversized or reshaped all degrade to "no identity
 known", which keeps the Orca logo and costs nothing else. If your `<userData>` is
-somewhere unusual, set `agentStateDir`. Only the agent id is ever extracted —
-`payload.prompt` and `lastAssistantMessage` are never copied, logged or
-published.
+somewhere unusual, set `agentStateDir`. Agent ids and fresh OMP progress labels
+are extracted; `payload.prompt`, `lastAssistantMessage`, tool arguments, and
+tool output are never copied into the presence.
 
 ### Artwork
 
@@ -254,48 +292,30 @@ thinks is running.
 | Capability | Why |
 | --- | --- |
 | `workspace:read` | Focused workspace name and branch, for `full` privacy |
-| `events:subscribe` | Worktree lifecycle and agent status changes — the data being published |
-| `storage` | Fleet state survives worker reaps (see below) |
+| `agent:read` | Agent status change events |
+| `storage:own` | Fleet state survives worker restarts |
 | `settings:own` | The plugin's own `enabled` / `privacy` / `clientId` / `header` / artwork keys |
 | `notifications:show` | Command feedback |
 
-`secrets` and `terminal:send` are deliberately **not** requested.
+`secrets:own` and `terminal:send` are deliberately **not** requested.
 
 ## Compatibility
 
-Checked on 2026-08-30 against every stable desktop release after the previous `v1.4.185` checkpoint: [`v1.4.186`](https://github.com/stablyai/orca/releases/tag/v1.4.186), [`v1.4.187`](https://github.com/stablyai/orca/releases/tag/v1.4.187), [`v1.4.188`](https://github.com/stablyai/orca/releases/tag/v1.4.188), [`v1.4.190`](https://github.com/stablyai/orca/releases/tag/v1.4.190), [`v1.4.191`](https://github.com/stablyai/orca/releases/tag/v1.4.191), and the latest [`v1.4.192`](https://github.com/stablyai/orca/releases/tag/v1.4.192). There was no stable `v1.4.189` release.
+The development manifest uses format 2 and requires Orca `>=1.4.246`.
+Orca derives the plugin publisher from the installation source, so changing
+from the legacy `lutica-canard.discord-presence` installation to a local
+folder or a different Git owner creates a different settings and storage
+location. Existing settings and elapsed time are not automatically transferred.
 
-Those releases substantially improved agent-status correctness, worktree identity across hosts, remote/SSH recovery, terminal sessions, native chat, automations, and WSL behavior. The presence benefits from the corrected events automatically. Orca also added an internal `workingMode: "monitoring"`, but the plugin event remains a deliberately bounded four-field projection, so this plugin cannot distinguish foreground work from background monitoring yet.
-
-The ten upstream files this plugin depends on are byte-identical at `v1.4.185`, `v1.4.192`, and Orca `main` commit `d607a63670d504763262daa9df335baac4eea8be` observed on 2026-08-30. `main` still carries its independent `1.4.178-rc.2` package version, so source identity—not that package number—is the useful comparison. The engine floor stays `>=1.4.0`: no public plugin contract used here has moved since the plugin system landed.
-
-Re-read upstream and found unchanged — these are the contracts `src/lib/orca-api.mts` transcribes:
-
-| Upstream contract | State |
-| --- | --- |
-| Host API v0 method table (`plugin-host-api.ts`) | 13 methods, all still `experimental`; `workspace.readContext` still returns `{ branch, displayName, terminals }` |
-| Event set (`plugin-events.ts`) | Still the three worktree/agent events — no focus-change event |
-| Capability kinds (`plugin-capabilities.ts`) | Still seven unscoped kinds; still no `net:*` |
-| Agent states (`agent-status-types.ts`) | Still `working` / `blocked` / `waiting` / `done`; new internal monitoring and per-turn fields do not reach the plugin event payload |
-| Worker environment (`plugin-worker-env.ts`) | Still an allowlist without `XDG_RUNTIME_DIR` |
-| Idle reap (`plugin-host-protocol.ts`) | Still 5 minutes |
-| Settings and storage location | Still `<userData>/plugins-data/<publisher>.<id>/` |
-| Manifest and marketplace schemas | Unchanged; `commands[].context` is declared here |
-
-`orca-compatibility.json` records the reviewed Git blob ids. The read-only **Orca compatibility** workflow checks the latest stable release and `main` every Monday; it fails on any new stable version—even if the files are unchanged—or on contract drift in either ref, forcing this section and the handwritten API types to be reviewed. Run the same check locally with `npm run check:orca-compatibility` (network access to the public GitHub API is required).
-
-Contribution kinds the manifest could carry and deliberately does not:
-
-- **`keybindings`** — see [Shortcuts](#shortcuts).
-- **`panels`** — a sandboxed panel may call only `workspace.readContext`, `terminal.sendText`, and `notifications.show`. Plugin storage and settings are worker-only, so a presence panel could not read what the plugin is publishing; there is nothing to render yet.
-- **`languagePacks`, `vmRecipes`, `agents`** — content packs for other kinds of plugin.
-- **`icon`** — the host validates it, but nothing surfaces it in the plugin list yet.
+`orca-compatibility.json` records a historical v1 contract baseline, not a
+verification of the migrated v2 manifest. Validate the current checkout with
+`orca plugin validate .` before release.
 
 ## Known limitations
 
 **The status is ephemeral by design.** Orca reaps a plugin worker after 5 minutes with no in-flight work (`PLUGIN_WORKER_IDLE_REAP_MS`) and re-forks it on the next event. A worker cannot keep itself alive — only host→worker traffic refreshes the idle clock. So the presence appears while your fleet is active, disappears after a few quiet minutes, and returns on the next agent event. Fleet state is persisted to plugin storage so nothing is lost across the gap, and statuses older than six hours are dropped rather than rehydrated as if still live.
 
-**The focused workspace is polled, not pushed.** Orca emits no focus-change event, so `full` privacy refreshes and republishes the workspace and branch every 30 seconds. **Show Connection Status** and **Reconnect** refresh it immediately.
+**The focused workspace is polled.** The plugin checks `workspace.readContext` every 15 seconds and republishes changed details at `full`. Debouncing and Discord delivery add latency; **Show Connection Status** and **Reconnect** refresh the context immediately.
 
 **Command arguments depend on the host.** **Set Header** accepts a string or `{ header }`, and **Cycle Privacy Level** a level or `{ privacy }`, when Orca passes an argument through. As of `1.4.192` no host path does: the palette and recorded shortcuts both invoke commands with no argument, even though the IPC carries one. Until that changes the cycles are the whole interface, and free-form headers go in the settings file.
 
@@ -312,7 +332,7 @@ Contribution kinds the manifest could carry and deliberately does not:
 ## Development
 
 ```bash
-git clone https://github.com/LuticaCANARD/orca-discord-presence.git
+git clone https://github.com/aditya11201/orca-discord-presence.git
 cd orca-discord-presence
 npm install
 npm run build      # tsc → dist/
@@ -371,4 +391,4 @@ The marketplace listing pins a **release tag**, not `main` — a branch ref woul
 
 ## License
 
-MIT
+MIT. Original copyright © 2026 Lutica_CANARD; see [LICENSE](LICENSE).
