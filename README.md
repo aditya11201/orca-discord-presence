@@ -16,7 +16,7 @@ The original copyright notice and MIT license remain in [LICENSE](LICENSE).
 └──────┘  00:14 elapsed
 ```
 
-Line one is the **header**, and it is yours to set. Line two is the fleet, ending in Discord's own party gauge: busy agents out of the agents Orca has announced. The timer counts how long this Orca session has been open: it starts once and does not restart when an agent starts or stops.
+Line one is the **header**, and it is yours to set. Line two is the fleet, ending in Discord's own party gauge: busy agents out of the agents Orca has announced. The timer uses a persisted timestamp that survives worker and agent changes and can continue across Orca restarts. Agent starts and stops do not reset it; without a reliable host app-session identity or start time, it does not measure the current Orca app's lifetime.
 
 An agent counts as busy while it is `working`, `blocked`, or `waiting` — Orca renders the last two identically, as "agent needs user attention", so a fleet sitting on permission prompts keeps the timer running instead of reading as idle.
 
@@ -31,13 +31,25 @@ The default Discord application is **Orca ADE** (`1560068042283687946`). The plu
 
 ## Install
 
-The repository's existing tag is a legacy release, not the manifest-v2 development version:
+The repository's legacy `orca-marketplace.json` index pins the committed
+manifest-v2 snapshot at
+`50f63055ef98b062b18e3a9560997d5b90122ff9`. Orca's plugin-catalog docs say it
+still falls back to this legacy format, but `orca plugin validate` accepts only
+the newer `orca-catalog.json`; it does not validate `orca-marketplace.json`.
+This repository index is not evidence of a community marketplace listing.
+
+Install that exact snapshot with the documented CLI syntax:
 
 ```text
-https://github.com/aditya11201/orca-discord-presence.git#v0.2.0
+orca plugin install aditya11201/orca-discord-presence --ref 50f63055ef98b062b18e3a9560997d5b90122ff9
 ```
 
-This upstream tag predates the local manifest-v2 migration; the migrated version has not yet been released.
+Installing plugin code requires approval in Orca. The pinned commit contains
+manifest v2, version `0.2.0`. It is not a release and excludes uncommitted
+review changes in this checkout. The existing `v0.2.0` tag points to the earlier
+v1 manifest under the upstream identity, so do not use that tag for this
+version. Replace this commit ref with a newly reviewed release tag only after
+that tag exists.
 
 ## Privacy
 
@@ -308,8 +320,10 @@ folder or a different Git owner creates a different settings and storage
 location. Existing settings and elapsed time are not automatically transferred.
 
 `orca-compatibility.json` records a historical v1 contract baseline, not a
-verification of the migrated v2 manifest. Validate the current checkout with
-`orca plugin validate .` before release.
+verification of the migrated v2 manifest. Run `orca plugin validate .` to
+check the current plugin manifest against the installed Orca host before release.
+The CLI's catalog validation accepts only `orca-catalog.json`, not the legacy
+`orca-marketplace.json` index.
 
 ## Known limitations
 
@@ -352,7 +366,7 @@ node scripts/smoke-live.mjs omp        # force one agent's artwork
 It connects to the real IPC socket, publishes one activity, and clears it three seconds later — which mutates your Discord profile for those three seconds, so it is deliberately outside `npm test`.
 
 ```text
-orca-plugin.json            manifest (validated against the host schema by a test)
+orca-plugin.json            manifest (validated with `orca plugin validate .`)
 orca-marketplace.json       marketplace index — lets this repo be its own source
 orca-compatibility.json     reviewed Orca release and plugin-contract object ids
 scripts/check-orca-compatibility.mjs
@@ -372,22 +386,22 @@ Orca ships no types package for plugin authors, so `src/lib/orca-api.mts` transc
 
 ### Cutting a release
 
-Four places carry the version, and a test fails if they disagree:
+The repository's legacy index pins the committed v2 snapshot at
+`50f63055ef98b062b18e3a9560997d5b90122ff9`; the install command above uses the
+same immutable commit. The existing `v0.2.0` tag points to the earlier v1
+manifest and must not be moved or reused.
 
-1. `package.json` → `version`
-2. `orca-plugin.json` → `version`
-3. `orca-marketplace.json` → `plugins[].source.ref` (as `v<version>`)
-4. `README.md` → the install URL's `#v<version>` fragment
+For a later release, bump `package.json` and `orca-plugin.json` to a new,
+unused version. Run `orca plugin validate .`, `npm test`, and
+`npm run typecheck`, then review and publish the release under its matching
+version tag. The GitHub workflow rebuilds the tag, checks for stale `dist/`,
+runs `node --test`, verifies that the tag matches `orca-plugin.json`, and
+creates the GitHub release. Once that reviewed tag exists, update
+`orca-marketplace.json`'s `source.ref` and the install command's `--ref` above
+to use it.
 
-Then `npm run build`, commit, and push a matching tag:
-
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
-
-The release workflow re-runs typecheck, build, the stale-`dist/` check and the tests, verifies the tag matches the manifest, and publishes a GitHub release.
-
-The marketplace listing pins a **release tag**, not `main` — a branch ref would re-resolve to whatever HEAD happens to be on the next marketplace refresh, quietly moving users onto unreleased commits. A test enforces that the ref is a tag and that it matches the manifest version.
+Keep `orca-marketplace.json` on the commit pin until then. Do not point it at a
+moving branch.
 
 ## License
 

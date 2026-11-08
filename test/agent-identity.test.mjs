@@ -152,6 +152,21 @@ test('resolveAgentImage prefers the override, then the built-in source, then the
   })
 })
 
+test('unconfigured OMP uses the animated built-in artwork and explicit overrides still win', () => {
+  const animatedImage =
+    'https://raw.githubusercontent.com/aditya11201/orca-discord-presence/main/assets/omp-tetris-transparent.webp'
+  const override = 'https://example.com/my-omp.png'
+
+  assert.equal(
+    resolveAgentImage('omp', {}).key,
+    animatedImage
+  )
+  assert.equal(
+    resolveAgentImage('omp', { agentImages: { omp: override } }).key,
+    override
+  )
+})
+
 test('a rejected override falls through to the next source', () => {
   // A file path or a non-image URL would be sent to Discord as-is and rejected,
   // so it is ignored rather than published.

@@ -70,9 +70,8 @@ export declare function readAgentIdentities(options?: ReadAgentIdentitiesOptions
  * is checked to respond with an image content type before being shipped here;
  * Discord proxies each one once and caches it, so publishing costs no request.
  *
- * `omp` points at the project's own site. Orca ships no logo for it, and the
- * site's OG image is the only public artwork, so `agentImages` is the knob for
- * a cleaner one.
+ * `omp` uses this repository's transparent animated artwork; `agentImages` can
+ * still override it.
  */
 export declare const DEFAULT_AGENT_IMAGE_SOURCES: Readonly<Record<string, string>>;
 export declare function describeAgent(agent: string): string;

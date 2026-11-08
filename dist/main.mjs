@@ -105,6 +105,8 @@ class PresenceRuntime {
     #lastPublishAt = 0;
     #lastPayload = '';
     #focus = null;
+    #stateReady = false;
+    #pendingEvents = [];
     #publishTimer = null;
     #reconnectTimer = null;
     #refreshTimer = null;
@@ -138,15 +140,19 @@ class PresenceRuntime {
     async #bootstrap() {
         await this.#loadSettings();
         await this.#loadState();
+        this.#stateReady = true;
+        for (const mutate of this.#pendingEvents.splice(0)) {
+            this.onEvent(mutate);
+        }
         this.#startSession();
         await this.#refreshFocus();
         this.#schedulePublish();
     }
     /**
-     * Discord's elapsed timer measures the Orca session, not a stretch of agent
-     * work, so the stamp is written once and never cleared: agents starting and
-     * stopping changes the status line but not the clock. Persisting it is what
-     * lets a reaped worker restore the same timer instead of restarting it.
+     * Orca's plugin API exposes no reliable app-session identity or start time,
+     * so this stamp is persisted and never cleared here. It survives worker
+     * restarts and agent transitions and can continue across Orca restarts; it
+     * does not reliably mark the current app session's start time.
      */
     #startSession() {
         if (this.#sessionSince > 0) {
@@ -253,8 +259,8 @@ class PresenceRuntime {
     }
     /**
      * Migrates a `busy-since` stamp written by a build whose timer restarted on
-     * every idle→busy transition. Adopting it rather than starting fresh keeps
-     * the current session's timer continuous across the upgrade.
+     * every idle→busy transition. Adopting it rather than starting fresh
+     * preserves the existing timestamp across the upgrade.
      */
     async #adoptLegacySessionSince() {
         try {
@@ -328,16 +334,19 @@ class PresenceRuntime {
         // while the fleet is quiet, so switching panes updates both artwork and status.
         // It runs regardless of `dynamicAgentImage`: identities are state, not publication.
         this.onEvent((state) => applyAgentIdentities(state, this.readIdentities()));
-        // Orca still has no focus-change plugin event. Polling only helps if a
-        // changed context triggers a publish; otherwise the new workspace sits in
-        // memory until an unrelated agent event happens to arrive.
+        // `workspace.changed` exists, but this manifest doesn't declare it, so
+        // polling is how this worker notices focus changes.
         if (this.#settings.privacy === 'full' && !sameFocus(previous, next)) {
             this.#schedulePublish();
         }
     }
-    /** Applies a state mutation, then persists and republishes. */
+    /** Applies events only after persisted state has loaded or failed to load. */
     onEvent(mutate) {
         if (this.#disposed) {
+            return;
+        }
+        if (!this.#stateReady) {
+            this.#pendingEvents.push(mutate);
             return;
         }
         try {

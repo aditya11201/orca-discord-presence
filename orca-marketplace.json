@@ -7,7 +7,7 @@
       "source": {
         "kind": "git",
         "url": "https://github.com/aditya11201/orca-discord-presence.git",
-        "ref": "v0.2.0"
+        "ref": "50f63055ef98b062b18e3a9560997d5b90122ff9"
       },
       "description": "Publishes your Orca agent fleet's activity to Discord Rich Presence.",
       "categories": ["integrations", "status"]

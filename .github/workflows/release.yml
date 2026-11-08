@@ -32,9 +32,9 @@ jobs:
 
       - run: node --test
 
-      # Why: the marketplace entry pins a tag and the manifest carries its own
-      # version. A tag that disagrees with either would install contents that
-      # do not match what the listing advertises.
+      # Why: the legacy marketplace index pins an immutable commit, while the
+      # release tag and manifest carry a version. A tag that disagrees with the
+      # manifest version would mislabel the release contents.
       - name: Tag matches the manifest version
         run: |
           tag="${GITHUB_REF_NAME}"

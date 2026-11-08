@@ -223,12 +223,11 @@ export function readAgentIdentities(
  * is checked to respond with an image content type before being shipped here;
  * Discord proxies each one once and caches it, so publishing costs no request.
  *
- * `omp` points at the project's own site. Orca ships no logo for it, and the
- * site's OG image is the only public artwork, so `agentImages` is the knob for
- * a cleaner one.
+ * `omp` uses this repository's transparent animated artwork; `agentImages` can
+ * still override it.
  */
 export const DEFAULT_AGENT_IMAGE_SOURCES: Readonly<Record<string, string>> = Object.freeze({
-  omp: 'https://omp.sh/og-image.png',
+  omp: 'https://raw.githubusercontent.com/aditya11201/orca-discord-presence/main/assets/omp-tetris-transparent.webp',
   opencode: 'https://raw.githubusercontent.com/stablyai/orca/main/resources/opencode.webp',
   // Orca's second OpenCode runtime; same product, same artwork.
   opencode2: 'https://raw.githubusercontent.com/stablyai/orca/main/resources/opencode.webp',

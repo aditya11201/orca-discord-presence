@@ -17,13 +17,15 @@ import activate, { deactivate, DEFAULT_CLIENT_ID } from '../dist/main.mjs'
 function createFakeOrca({
   settings = {},
   capabilities,
+  initialStorage = new Map(),
+  beforeStorageGet = async () => {},
   workspace = {
     branch: 'feat/presence',
     displayName: 'orca-discord-presence',
     terminals: []
   }
 } = {}) {
-  const storage = new Map()
+  const storage = initialStorage
   const calls = []
   const commands = new Map()
   const events = new Map()
@@ -57,6 +59,7 @@ function createFakeOrca({
             stored[params.key] = params.value
             return { ok: true }
           case 'storage.get':
+            await beforeStorageGet(params.key)
             return { value: storage.get(params.key) ?? null }
           case 'storage.set':
             storage.set(params.key, params.value)
@@ -98,6 +101,12 @@ function createFakeOrca({
 /** Lets the runtime's own awaited chain settle without leaning on timers. */
 const settle = () => new Promise((resolve) => setImmediate(resolve))
 
+function deferred() {
+  let resolve
+  const promise = new Promise((done) => { resolve = done })
+  return { promise, resolve }
+}
+
 test('activate registers the manifest commands and event handlers', async () => {
   const fake = createFakeOrca()
   await activate(fake.orca)
@@ -121,6 +130,86 @@ test('v2 workspace events track and remove running agents', async () => {
   assert.equal((await fake.invoke('presence.status')).summary.activeWorktrees, 1)
   await fake.emit('workspace.removed', { workspaceId: 'w1', kind: 'worktree', path: '/repos/app' })
   assert.equal((await fake.invoke('presence.status')).summary.panes, 0)
+  await deactivate()
+})
+
+test('events during a delayed restore replay in order after persisted state loads', async () => {
+  const storageReady = deferred()
+  const releaseStorage = deferred()
+  const now = Date.now()
+  const fake = createFakeOrca({
+    initialStorage: new Map([['presence-state', {
+      worktrees: { prior: { path: '/repos/prior', branch: 'main' } },
+      panes: { old: { worktreeId: 'prior', state: 'waiting', receivedAt: now } }
+    }]]),
+    beforeStorageGet: async (key) => {
+      if (key !== 'presence-state') return
+      storageReady.resolve()
+      await releaseStorage.promise
+    }
+  })
+
+  activate(fake.orca)
+  await storageReady.promise
+  await fake.emit('workspace.created', {
+    workspaceId: 'w1', kind: 'worktree', path: '/repos/first', branch: 'main'
+  })
+  await fake.emit('agent.status.changed', {
+    workspaceId: 'w1', paneKey: 'p1', state: 'working', receivedAt: now
+  })
+  await fake.emit('workspace.removed', {
+    workspaceId: 'w1', kind: 'worktree', path: '/repos/first'
+  })
+  await fake.emit('workspace.created', {
+    workspaceId: 'w2', kind: 'worktree', path: '/repos/latest', branch: 'feature'
+  })
+  await fake.emit('agent.status.changed', {
+    workspaceId: 'w2', paneKey: 'p2', state: 'blocked', receivedAt: now + 1
+  })
+  await fake.emit('agent.status.changed', {
+    workspaceId: 'w2', paneKey: 'p2', state: 'done', receivedAt: now + 2
+  })
+
+  releaseStorage.resolve()
+  await settle()
+  const summary = (await fake.invoke('presence.status')).summary
+  assert.equal(summary.worktrees, 2, 'the stored worktree and latest creation both survive')
+  assert.equal(summary.panes, 2, 'removing w1 deletes its earlier pane update')
+  assert.equal(summary.waiting, 1)
+  assert.equal(summary.done, 1, 'the latest queued agent transition wins')
+  assert.equal(summary.blocked, 0)
+  await deactivate()
+})
+
+test('events during a failed state restore apply with the default privacy level', async () => {
+  const storageReady = deferred()
+  const releaseStorage = deferred()
+  const now = Date.now()
+  const fake = createFakeOrca({
+    beforeStorageGet: async (key) => {
+      if (key !== 'presence-state') return
+      storageReady.resolve()
+      await releaseStorage.promise
+      throw new Error('storage unavailable')
+    }
+  })
+
+  activate(fake.orca)
+  await storageReady.promise
+  await fake.emit('workspace.created', {
+    workspaceId: 'w1', kind: 'worktree', path: '/repos/app', branch: 'main'
+  })
+  await fake.emit('agent.status.changed', {
+    workspaceId: 'w1', paneKey: 'p1', state: 'working', receivedAt: now
+  })
+  releaseStorage.resolve()
+  await settle()
+
+  const status = await fake.invoke('presence.status')
+  assert.equal(status.privacy, 'minimal')
+  assert.equal(status.summary.working, 1)
+  assert.equal(status.summary.activeWorktrees, 1)
+  assert.ok(fake.logs.includes('could not restore state: storage unavailable'))
   await deactivate()
 })
 
